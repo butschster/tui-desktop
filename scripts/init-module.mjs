@@ -50,6 +50,23 @@ function sameIdentity(left, right) {
     .every((key) => left?.[key] === right[key])
 }
 
+// Template identity tokens mapped to what they become for a given identity.
+// check-module.mjs uses this to scan for scaffold leftovers without false
+// positives when the replacement is a superstring of the token (a module
+// actually named starter-demo yields acme/starter-demo, which contains
+// "acme/starter" without being a leftover).
+export function templateTokenMap(identity) {
+  const sqlPrefix = identity.namespace.replace(/\./g, '_')
+  return new Map([
+    ['acme/starter', `${identity.organization}/${identity.module}`],
+    ['acme.starter', identity.namespace],
+    ['acme-starter', identity.tag],
+    ['acme_starter', sqlPrefix],
+    ['ACME_STARTER', sqlPrefix.toUpperCase()],
+    ['AcmeStarter', `${pascal(identity.organization)}${pascal(identity.module)}`],
+  ])
+}
+
 export async function initialize(argv, root = defaultRoot) {
   const args = parseArgs(argv)
   if (args.help) {
@@ -98,6 +115,7 @@ export async function initialize(argv, root = defaultRoot) {
     ['AcmeStarter', className],
     ['Acme Starter', title],
     ['ACME_STARTER', envPrefix],
+    ['acme_test_starter', `${namespacePart(organization)}_test_${moduleSnake}`],
     ['acme/starter', `${organization}/${moduleName}`],
     ['acme.starter', namespace],
     ['acme-starter', tag],
@@ -109,6 +127,13 @@ export async function initialize(argv, root = defaultRoot) {
     ['starter-test-user', `${moduleName}-test-user`],
     ['starter-t-', `${moduleName}-t-`],
     ['Starter Log', `${title} Log`],
+    ['Starter module scaffold', `${title} module`],
+    ['Starter Test Harness', `${title} Test Harness`],
+    ['Starter page web component', `${title} page web component`],
+    ['group: Starter', `group: ${title}`],
+    ['category: Starter', `category: ${title}`],
+    ['import Starter from', `import ${className}View from`],
+    ['rootComponent: Starter', `rootComponent: ${className}View`],
     ['title: Starter', `title: ${title}`],
     ['route_name: starter', `route_name: ${moduleName}`],
     ['organization: acme', `organization: ${organization}`],
@@ -117,6 +142,22 @@ export async function initialize(argv, root = defaultRoot) {
     ['"starter.log"', `"${moduleName}.log"`],
     ['/starter', `/${route}`],
   ]
+  // All replacements happen in one pass over the content, longest pattern
+  // first, so replaced text is never rescanned. A module name that itself
+  // starts with "starter" (e.g. starter-demo) therefore cannot be corrupted
+  // by a later pattern matching inside an earlier replacement's output.
+  // Bare-word alternatives run last as prose fallbacks: any "starter" the
+  // longer literals did not claim becomes the module name (or title when
+  // capitalized), so no scaffold wording leaks into shipped metadata.
+  const escapeLiteral = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const byLength = replacements.map(([from]) => from).sort((a, b) => b.length - a.length)
+  const replacementMap = new Map(replacements)
+  const replacementPattern = new RegExp(
+    [...byLength.map(escapeLiteral), '\\bStarter\\b', '\\bstarter\\b'].join('|'), 'g')
+  const applyReplacements = (text) => text.replace(replacementPattern, (match) => {
+    if (replacementMap.has(match)) return replacementMap.get(match)
+    return match === 'Starter' ? title : moduleName
+  })
   const excludedDirectories = new Set(['.git', '.wippy', '.local', 'node_modules', 'kickside-development', 'scripts'])
 
   async function walk(directory) {
@@ -136,9 +177,8 @@ export async function initialize(argv, root = defaultRoot) {
     if (info.size > 4 * 1024 * 1024) continue
     const buffer = await readFile(file)
     if (buffer.includes(0)) continue
-    let content = buffer.toString('utf8')
-    const before = content
-    for (const [from, to] of replacements) content = content.split(from).join(to)
+    const before = buffer.toString('utf8')
+    const content = applyReplacements(before)
     if (content !== before) {
       await writeFile(file, content)
       changedFiles += 1

@@ -5,6 +5,17 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { initialize } from './init-module.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+
+// The initializer can only be exercised from the pristine template: an
+// initialized checkout no longer contains the acme/starter placeholders the
+// test rewrites. Module checkouts skip this suite; the template repo's CI
+// still runs it on every change.
+const rootConfig = JSON.parse(await readFile(resolve(root, '.kickside-module.json'), 'utf8'))
+if (rootConfig.initialized) {
+  console.log('Initializer test skipped: checkout is already initialized; the suite runs in the template repository CI.')
+  process.exit(0)
+}
+
 const target = await mkdtemp(resolve(tmpdir(), 'kickside-module-init-'))
 
 await cp(root, target, {

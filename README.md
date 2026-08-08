@@ -37,7 +37,10 @@ Without GitHub CLI, clone the public template, replace its Git remote with your
 own repository, then run the same `make init` command.
 
 Install the current Wippy CLI from [Wippy releases](https://hub.wippy.ai/releases)
-and use Node.js 22 or newer. Confirm both tools before starting:
+and use Node.js 22 or newer. The template is verified against the CLI version
+pinned in `.github/workflows` (`WIPPY_VERSION`); if `make test` ever reports
+"No tests found", check the CLI version against that pin first. Confirm both
+tools before starting:
 
 ```bash
 wippy version
@@ -147,6 +150,10 @@ The executable example is `acme/starter` until initialized:
 - `acme.starter.api:get_status.endpoint` exposes authenticated module status.
 - `acme.starter:starter_view` publishes an announced, auto-registered Wippy
   web component served by the module's own embedded filesystem.
+- `acme.starter.blocks:block.write_log` contributes the capability to the
+  headless Block catalog (`kickside.block/v1`) so Automations, Workflows, and
+  agents can compose it; `block_write_log` is its function implementation and
+  runs the same persistence path as the sink.
 - `test/` supplies an isolated host and behavioral/wiring suites.
 
 Package identity (`organization/module`), registry namespace

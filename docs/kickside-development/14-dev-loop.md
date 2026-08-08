@@ -69,7 +69,14 @@ workspace:
 
 override:
   "app.env:defaults:values.GOV_MANAGED_NAMESPACES": "acme.starter"
+  "acme.starter.security:user_security_scope:default": app.security:user
 ```
+
+The `user_security_scope` line binds the module's security requirement to the
+application's authenticated-user group. A workspace mount has no dependency
+parameters, so without this override the requirement stays unresolved: the
+boot log warns `unresolved requirement`, the module's endpoint-access policy
+receives no group, and every module endpoint returns 403 for real users.
 
 `workspace.replacements` maps the published module identity to any local module
 root; the directory name does not participate in module identity. The module's
@@ -81,6 +88,13 @@ only local-development mechanism.
 The managed-namespace allow-list permits deliberate registry-side development
 of this module without granting governance authority over Hub-owned Kickside or
 Wippy namespaces.
+
+Bootstrap is two-phase by design: the first `wippy run kickside/kickside`
+invocation must run WITHOUT `--config .wippy.workspace.yaml`. Overlay
+`override:` targets are validated against the resolved graph, and during the
+first resolution the module's entries do not exist yet, so the run fails with
+`stage 'override' failed: no entry found for <ns>...`. Bootstrap clean first,
+stop the instance, then do every subsequent start with the overlay.
 
 Start the established deployment with the overlay:
 

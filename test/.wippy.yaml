@@ -1,4 +1,10 @@
 version: "1.0"
+# Strict security mode (CLI default since v0.3.27a) requires every process to
+# carry an actor and scope. The harness therefore depends on wippy/security
+# (policy groups for host-managed services) and on a wippy/test whose runner
+# declares meta.command.security (wippyai/framework#107, resolved by the CLI
+# via wippyai/runtime#558). Until both releases land, run tests with the CLI
+# version pinned in .github/workflows.
 workspace:
   replacements:
     acme/starter: ..
@@ -7,6 +13,9 @@ override:
 vars:
   pg_host: localhost
   pg_port: 5433
+  # <org>_test_<module> per docs/kickside-development/13-testing.md: harnesses
+  # from different orgs share one Postgres server without colliding. Older
+  # modules hardcode a kickside_test_ prefix; new modules use the org form.
   pg_database: acme_test_starter
   pg_username: kickside
   pg_password: kickside

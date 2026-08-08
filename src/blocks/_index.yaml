@@ -1,0 +1,69 @@
+version: "1.0"
+namespace: acme.starter.blocks
+
+# The module contributes its capability to the headless Block catalog. The
+# declaration is inert registry data discovered by kickside.blocks; the visual
+# Workflows palette is one optional consumer. The Block lowers to a native
+# func node whose target runs the SAME persistence path the sink and HTTP API
+# use — a Block never owns a second implementation of the capability.
+entries:
+  # acme.starter.blocks:block.write_log
+  - name: block.write_log
+    kind: registry.entry
+    meta:
+      type: kickside.block
+      public: true
+      title: Write log entry
+      description: Persists one log entry through the starter sink and returns the stored entry id and the running count.
+    data:
+      block:
+        api_version: kickside.block/v1
+        input:
+          type: object
+          additionalProperties: false
+          required: [content]
+          properties:
+            content: { type: string, title: Content }
+            label: { type: string, title: Label }
+        config:
+          type: object
+          additionalProperties: false
+          properties:
+            default_label: { type: string, title: Default label }
+        output:
+          type: object
+          additionalProperties: false
+          required: [entry_id, count]
+          properties:
+            entry_id: { type: string }
+            label: { type: string }
+            count: { type: number }
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+        ports:
+          - { id: result, label: Entry, direction: out }
+          - { id: failed, label: Failed, direction: out }
+        presentation:
+          category: Starter
+          icon: tabler:terminal-2
+          hue: green
+          blurb: Persist one log entry and report the running count.
+        execution:
+          kind: function
+          function_id: acme.starter.blocks:block_write_log
+
+  # acme.starter.blocks:block_write_log
+  - name: block_write_log
+    kind: function.lua
+    meta:
+      comment: Canonical function Block implementation for the write-log capability.
+    source: file://write_log.lua
+    method: execute
+    imports:
+      repo: acme.starter.persist:repo
+    modules: []

@@ -15,6 +15,57 @@ repository.
 6. Locate an installed or published example before adding a new registry kind.
    Use the registry definition and owning contract.
 
+## Live documentation
+
+The authoritative, always-current documentation is the Kickside wiki on the
+Hub — the `docs/kickside-development/` copy in this checkout is a vendored
+snapshot and may lag behind it:
+
+- Wiki index: <https://hub.wippy.ai/kickside/kickside/wiki/README.md>
+- Handbook: <https://hub.wippy.ai/kickside/kickside/wiki/docs/kickside-development/developer-handbook.md>
+- Any vendored page maps to
+  `https://hub.wippy.ai/kickside/kickside/wiki/docs/kickside-development/<page>.md`.
+
+When the vendored copy and the wiki disagree, the wiki wins. Consult it before
+relying on a convention that looks stale, and browse Hub module pages
+(<https://hub.wippy.ai/kickside>) for current contracts, bindings, and
+requirements of the modules you integrate with.
+
+Wippy platform documentation (runtime, frontend/web-host, micro-frontend
+compliance) is served live at wippy.ai and is queryable:
+
+- Table of contents: <https://wippy.ai/llm/toc>
+- Search: `https://wippy.ai/llm/search?q=<query>`
+- Page fetch: `https://wippy.ai/llm/path/en/<path>` — e.g.
+  `en/frontend/micro-frontends/compliance-checklist` for the web-component
+  shipping checklist, `en/frontend/web-host/multi-panel-layout` for the
+  managed layout the shell mounts components into.
+
+Search these before frontend or host-integration work; the web-host managed
+layout and theming rules version faster than any vendored snapshot.
+
+## Reuse before you build
+
+Kickside is a composed platform: most capabilities a module needs already
+exist as installed subsystems with published contracts. Before implementing
+anything, search for the existing owner and bind to it; a parallel
+implementation of an existing subsystem is a defect, not a feature.
+
+1. Check the Hub: browse the `kickside` organization and the module's Hub page
+   (Bindings/Reqs tabs) for an existing module that owns the capability.
+2. Check the deployment: `wippy registry list` / `registry.find` with the
+   canonical `meta.type`, and the component contract for runtime instances.
+3. Check the wiki page for the subsystem before designing your own model.
+
+Subsystems that already exist and must be reused, never reimplemented:
+knowledge (KBs, retrieval, organize), threads/events/projections, components
+and sharing/access grants, connections and providers, uploads, automations
+and triggers, inbox delivery, agents/skills/models (model classes), settings
+definitions, webhooks, MCP endpoints, code execution, workflows/blocks/flows.
+If the capability is generic (storage, auth, scheduling, LLM access), assume
+it exists and find its contract; implement only what is genuinely specific to
+this module's domain.
+
 ## Commands
 
 ```bash
@@ -100,8 +151,16 @@ searching registry declarations.
 - Web components are library builds with `formats: ['es']`,
   `preserveEntrySignatures: false`, and module-level
   `define(import.meta.url, ElementClass)`.
-- Keep `@wippy-fe/theme` and webcomponent runtime libraries bundled. Externalize
-  only host peers declared by the package.
+- Keep `@wippy-fe/theme` and webcomponent runtime libraries bundled. Every
+  package the shell import map serves (vue, pinia, vue-router, axios, luxon,
+  @iconify/vue, @tanstack/vue-query, markdown-it, primevue/*, @wippy-fe/proxy,
+  ...) stays in `rollupOptions.external`; a bundled copy bloats the artifact
+  and breaks on `process.env` reads. Keep the vite `define` shim for
+  `process.env.NODE_ENV`.
+- The shell mounts a page component in a definite-height surface whose
+  ancestors hide overflow. `:host` is `display: block; height: 100%` and the
+  page root owns `overflow-y: auto`; a page that does not own its scrolling is
+  silently clipped. `scripts/check-module.mjs` enforces this contract.
 - Registry metadata is authoritative: tag, props, description,
   `announced: true`, and `auto_register: true` must match the package.
 - Use `@wippy-fe/proxy`; never construct raw host postMessage protocols,

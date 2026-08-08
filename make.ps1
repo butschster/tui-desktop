@@ -51,8 +51,22 @@ function Invoke-Check {
 function Invoke-Build { Invoke-Checked npm @('--prefix', 'ui', 'run', 'build') }
 function Invoke-Lint { Invoke-Checked wippy @('lint') }
 function Invoke-Typecheck { Invoke-Checked npm @('--prefix', 'ui', 'run', 'type-check') }
-function Invoke-Test { Invoke-Checked wippy @('run', 'test') (Join-Path $Root 'test') }
-function Invoke-TestPg { Invoke-Checked wippy @('run', 'test', '--profile', 'postgres') (Join-Path $Root 'test') }
+# The runner exits 0 when it discovers zero tests, which turns a broken
+# discovery setup into a false-green run; mirror the Makefile guard.
+function Invoke-TestRunner {
+    param([string[]]$Arguments)
+    Push-Location (Join-Path $Root 'test')
+    try {
+        $output = & wippy @Arguments 2>&1 | ForEach-Object { "$_" }
+        $output | Write-Host
+        if ($LASTEXITCODE -ne 0) { throw "wippy failed with exit code $LASTEXITCODE" }
+        if ($output -match 'No tests found') { throw 'test runner discovered no tests' }
+    } finally {
+        Pop-Location
+    }
+}
+function Invoke-Test { Invoke-TestRunner @('run', 'test') }
+function Invoke-TestPg { Invoke-TestRunner @('run', 'test', '--profile', 'postgres') }
 function Invoke-Verify {
     Invoke-Setup
     Invoke-Check

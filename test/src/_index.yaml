@@ -113,6 +113,13 @@ entries:
       comment: Shared contract definitions imported by the replacement module under test.
     component: "kickside/contract"
 
+  - name: starter_harness.dep.security
+    version: "*"
+    kind: ns.dependency
+    meta:
+      comment: Platform security groups (wippy.security:process) that give host-managed services their policy scope under strict mode.
+    component: "wippy/security"
+
   - name: starter_harness.dep.bootloader
     version: "*"
     kind: ns.dependency

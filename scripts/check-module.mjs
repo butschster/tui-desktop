@@ -43,8 +43,43 @@ if (!rootIndex.includes(`tag_name: ${identity.tag}`)) report('registry web-compo
 if (packageJson.wippy?.tagName !== identity.tag) report('package.json web-component tag differs from template identity')
 if (typeof packageJson.wippy?.description !== 'string' || packageJson.wippy.description.length < 120) report('wippy.description must explain the module behavior and usage')
 if (!viteConfig.includes('preserveEntrySignatures: false')) report('web-component build must preserve the entry ownership contract')
-if (viteConfig.includes('process.env')) report('vite.config.ts must not override process.env/NODE_ENV')
 if (/--p-(red|green|blue|orange|yellow|purple|pink|sky|emerald)-\d+/i.test(styles)) report('frontend uses a nonexistent color-named --p-* token')
+
+// Library builds don't auto-replace process.env; without the define shim any
+// dependency that reads NODE_ENV throws "process is not defined" inside the
+// shadow DOM at runtime.
+if (!viteConfig.includes("'process.env.NODE_ENV'")) report("vite.config.ts must define 'process.env.NODE_ENV' for the lib build")
+if (!viteConfig.includes("'process.env': '{}'")) report("vite.config.ts must define 'process.env': '{}' as the fallback shim")
+
+// The shell serves these through its import map; a bundled copy bloats the
+// artifact, duplicates framework state, and reintroduces process.env reads
+// the define shim cannot reach inside prebuilt library dists.
+const shellProvidedPackages = ['vue', 'pinia', 'vue-router', 'axios', 'nanoevents', 'luxon', '@iconify/vue',
+  'iconify-icon', '@tanstack/vue-query', 'sanitize-html', 'markdown-it', 'markdown-it-async',
+  '@wippy-fe/proxy', '@wippy-fe/markdown-iframe']
+const declaredDeps = Object.keys({ ...packageJson.dependencies, ...packageJson.devDependencies, ...packageJson.peerDependencies })
+for (const dep of declaredDeps) {
+  if (shellProvidedPackages.includes(dep) && !viteConfig.includes(`'${dep}'`)) {
+    report(`ui/package.json declares ${dep}, which the shell import map provides; add it to rollupOptions.external in vite.config.ts`)
+  }
+  if (dep.startsWith('primevue') && !/\^primevue\\\//.test(viteConfig) && !viteConfig.includes('primevue/')) {
+    report('primevue components must stay external (external: [/^primevue\\//]); the surface import map serves them')
+  }
+}
+
+// The shell mounts page components in a definite-height surface whose every
+// ancestor hides overflow: a page that does not own its scrolling gets
+// silently clipped. Field/widget components (wippy.type other than
+// "component") render inline and are exempt.
+if (packageJson.wippy?.type === 'component') {
+  const hostBlock = styles.match(/:host\s*\{([^}]*)\}/)
+  if (!hostBlock || !/height:\s*100%/.test(hostBlock[1])) report('ui/src/styles.css must size :host to 100% height; the shell surface gives the component a definite-height region')
+  if (!hostBlock || !/min-height:\s*0/.test(hostBlock[1])) report('ui/src/styles.css :host needs min-height: 0 so the height chain does not collapse inside flex ancestors')
+  // The scroll owner must be the full-height element itself: an overflow rule
+  // on some small child does not stop the page root from clipping.
+  const scrollOwner = /\{[^}]*(?:height:\s*100%[^}]*overflow(?:-y)?:\s*auto|overflow(?:-y)?:\s*auto[^}]*height:\s*100%)[^}]*\}/.test(styles)
+  if (!scrollOwner) report('ui/src/styles.css must give the full-height page root overflow(-y): auto in the same rule; shell surface ancestors hide overflow and will clip a non-scrolling page')
+}
 
 const staticMetaPath = resolve(root, 'static/wippy-meta.json')
 if (!await exists(staticMetaPath)) {
@@ -112,12 +147,30 @@ for (const file of allFiles) {
 if (config.initialized) {
   const customizable = allFiles.filter((path) => !path.includes(`${sep}docs${sep}kickside-development${sep}`)
     && !path.includes(`${sep}scripts${sep}`))
-  const leftovers = ['acme/starter', 'acme.starter', 'acme-starter', 'acme_starter', 'ACME_STARTER', 'AcmeStarter']
+  const { templateTokenMap } = await import('./init-module.mjs')
+  const escapeLiteral = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // When the identity's own value is a superstring of the template token
+  // (module starter-demo → acme/starter-demo), a plain substring test cannot
+  // tell leftover from legitimate identity; the lookahead excludes exactly
+  // the legitimate continuation.
+  const leftoverPatterns = [...templateTokenMap(identity)].map(([token, current]) => {
+    const suffix = current.startsWith(token) && current !== token ? `(?!${escapeLiteral(current.slice(token.length))})` : ''
+    return [token, new RegExp(escapeLiteral(token) + suffix)]
+  })
+  // A bare "starter" word is also a template leftover — unless this module's
+  // own identity legitimately contains it (e.g. a module actually named
+  // starter-kit), in which case the word cannot distinguish scaffold residue.
+  const identityContainsStarter = /starter/i.test(Object.values(identity).join(' '))
   for (const file of customizable) {
     const buffer = await readFile(file)
     if (buffer.includes(0)) continue
     const content = buffer.toString('utf8')
-    for (const token of leftovers) if (content.includes(token)) report(`${relative(root, file)} retains template token ${token}`)
+    for (const [token, pattern] of leftoverPatterns) {
+      if (pattern.test(content)) report(`${relative(root, file)} retains template token ${token}`)
+    }
+    if (!identityContainsStarter && /\bstarter\b/i.test(content)) {
+      report(`${relative(root, file)} retains a bare "starter" template word`)
+    }
   }
 }
 

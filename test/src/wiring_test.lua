@@ -12,6 +12,8 @@ local NAV_ID = "acme.starter:nav_item"
 local STATIC_ID = "acme.starter:ui_static"
 local FS_ID = "acme.starter:ui_fs"
 local POLICY_ID = "acme.starter.security:starter_endpoint_access"
+local BLOCK_ID = "acme.starter.blocks:block.write_log"
+local BLOCK_FN_ID = "acme.starter.blocks:block_write_log"
 
 local function get(id)
     local entry, err = registry.get(id)
@@ -70,6 +72,20 @@ local function define_tests()
             test.eq(nav.path, "/starter")
             test.eq(nav.render, "component")
             test.eq(nav.component_tag, meta_of(get(VIEW_ID)).tag_name)
+        end)
+
+        test.it("contributes the write-log Block backed by its implementation function", function()
+            local block = get(BLOCK_ID)
+            test.eq(meta_of(block).type, "kickside.block")
+            local decl = data_of(block).block
+            test.not_nil(decl, "block declaration must live in data.block")
+            test.eq(decl.api_version, "kickside.block/v1")
+            test.eq(decl.execution.kind, "function")
+            test.eq(decl.execution.function_id, BLOCK_FN_ID)
+            test.not_nil(decl.input, "block must declare an input schema")
+            test.not_nil(decl.output, "block must declare an output schema")
+            test.not_nil(decl.error, "a failed port requires an error schema")
+            get(BLOCK_FN_ID)
         end)
 
         test.it("gates the api namespace behind the injectable access policy", function()
