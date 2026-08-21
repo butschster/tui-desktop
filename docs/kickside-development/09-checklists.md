@@ -81,11 +81,12 @@ Use these before merging or publishing a module.
 ## Publishing Checklist
 
 - `wippy lint` or module lint passes where available.
-- The module harness passes `wippy run test` and
-  `wippy run test --profile postgres` (page 13).
+- The module harness passes `wippy test` and
+  `wippy test --profile postgres` (page 13).
 - App boots on a clean DB if migrations changed.
 - No runtime logs or generated assets are committed unintentionally
   (`static/` regeneration is deliberate; see page 12).
 - `git diff --check` is clean.
-- `version` in `wippy.yaml` is bumped past the Hub's latest (page 15).
+- `wippy.yaml` carries no `version`; the publisher selects the next Hub
+  release, or release automation passes `--version` explicitly (page 15).
 - README/docs link to the new extension point.

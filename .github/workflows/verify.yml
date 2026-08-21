@@ -13,7 +13,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  WIPPY_VERSION: v0.3.25a
+  # "latest" resolves the newest published runtime CLI on every run so the
+  # template is always verified against current releases. Set an exact tag
+  # (e.g. v0.3.28a) only to bisect a runtime regression.
+  WIPPY_VERSION: latest
 
 jobs:
   module:
@@ -47,7 +50,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base="https://github.com/wippyai/runtime/releases/download/${WIPPY_VERSION}"
+          if [ "${WIPPY_VERSION}" = "latest" ]; then
+            base="https://github.com/wippyai/runtime/releases/latest/download"
+          else
+            base="https://github.com/wippyai/runtime/releases/download/${WIPPY_VERSION}"
+          fi
           curl -fsSLO "${base}/wippy-linux-amd64"
           curl -fsSLO "${base}/SHA256SUMS"
           grep ' wippy-linux-amd64$' SHA256SUMS | sha256sum -c -

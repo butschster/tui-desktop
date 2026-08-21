@@ -1,10 +1,10 @@
 version: "1.0"
-# Strict security mode (CLI default since v0.3.27a) requires every process to
-# carry an actor and scope. The harness therefore depends on wippy/security
-# (policy groups for host-managed services) and on a wippy/test whose runner
-# declares meta.command.security (wippyai/framework#107, resolved by the CLI
-# via wippyai/runtime#558). Until both releases land, run tests with the CLI
-# version pinned in .github/workflows.
+# Strict security mode requires every process to carry an actor and scope.
+# The harness therefore depends on wippy/security (policy groups for
+# host-managed services) and on a wippy/test runner that declares
+# meta.command.security. `make setup` resolves the harness graph fresh with
+# `wippy update`, which picks up current releases of both; suites run with
+# `wippy test`.
 workspace:
   replacements:
     acme/starter: ..

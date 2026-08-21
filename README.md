@@ -51,8 +51,9 @@ node --version
 
 `make verify` runs:
 
-- resolves the module's public Wippy dependencies and installs the committed
-  harness lock;
+- resolves the module's and the test harness's public Wippy dependencies to
+  their current releases (`wippy update` in both; locks are generated, never
+  committed);
 - installs the UI from `package-lock.json`;
 - validates identity consistency, documentation links, dependency ranges,
   generated files, frontend registry metadata, and secret hygiene;

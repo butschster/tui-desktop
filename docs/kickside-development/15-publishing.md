@@ -89,7 +89,7 @@ VIS    := private
 lint:
 	wippy lint
 test:
-	cd test && wippy run test
+	cd test && wippy test
 publish:
 	wippy publish --create --module-visibility $(VIS) --module-type $(TYPE)
 ```
@@ -163,10 +163,14 @@ how test harnesses wire the same slots through the bootloader dependency.
 
 ### Lockfiles
 
-Generated lockfiles are never committed at module roots. Only two kinds of
-`wippy.lock` are checked in: the app composition root (pinning `name` +
-`version` + `hash` per resolved module) and each module's `test/wippy.lock`
-harness lock. A module's own root lock is regenerated on demand.
+Generated lockfiles are never committed in a module repository — not at the
+module root and not in the test harness. Dependency declarations carry ranges
+(`"*"`, or a bound only when an API truly requires it); `make setup` runs
+`wippy update` in both the module root and `test/`, so every checkout and CI
+run resolves current releases and regenerates its locks locally. Committing a
+harness lock freezes the graph at authoring time and rots. The one place a
+`wippy.lock` is checked in is an app composition root, where pinning `name` +
+`version` + `hash` per resolved module is the point.
 
 ## Pre-Publish Checklist
 

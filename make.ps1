@@ -39,7 +39,7 @@ function Invoke-Init {
 
 function Invoke-Setup {
     Invoke-Checked wippy @('update')
-    Invoke-Checked wippy @('install') (Join-Path $Root 'test')
+    Invoke-Checked wippy @('update') (Join-Path $Root 'test')
     Invoke-Checked npm @('--prefix', 'ui', 'ci')
 }
 
@@ -65,8 +65,8 @@ function Invoke-TestRunner {
         Pop-Location
     }
 }
-function Invoke-Test { Invoke-TestRunner @('run', 'test') }
-function Invoke-TestPg { Invoke-TestRunner @('run', 'test', '--profile', 'postgres') }
+function Invoke-Test { Invoke-TestRunner @('test') }
+function Invoke-TestPg { Invoke-TestRunner @('test', '--profile', 'postgres') }
 function Invoke-Verify {
     Invoke-Setup
     Invoke-Check

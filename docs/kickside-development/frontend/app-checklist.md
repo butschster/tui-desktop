@@ -61,7 +61,7 @@ Run module backend tests and lint when `_index.yaml`, Lua, or APIs changed:
 
 ```sh
 wippy lint --json
-wippy run test
+cd test && wippy test
 ```
 
 Check the generated bundle was updated when expected:
