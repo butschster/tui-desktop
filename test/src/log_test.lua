@@ -6,7 +6,7 @@ local registry = require("registry")
 local security = require("security")
 local repo = require("repo")
 
-local WRITE_ID = "acme.starter:log_write"
+local WRITE_ID = "acme.starter.sink:write"
 local SINK_ID = "acme.starter:log_sink"
 local PORT_ID = "acme.starter:log"
 

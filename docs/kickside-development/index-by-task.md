@@ -88,8 +88,8 @@
   - **Use:** governance fs sync ([Dev Loop](14-dev-loop.md))
   - **Avoid:** rebuilding the app per change
 - **Publish a module**
-  - **Use:** version bump + `wippy publish` ([Publishing](15-publishing.md))
-  - **Avoid:** publishing without a version bump
+  - **Use:** `wippy publish` — the publisher selects the next Hub version ([Publishing](15-publishing.md))
+  - **Avoid:** pinning a release `version` in `wippy.yaml`
 
 ## Decision Tree
 

@@ -204,7 +204,7 @@ Inspect exact runtime state before changing it:
 
 ```json
 {"id":"keeper.state.tools:get_entries","arguments":{
-  "ids":["acme.starter:log_write"],
+  "ids":["acme.starter.sink:write"],
   "include_source":true,
   "full":true
 }}
@@ -215,7 +215,7 @@ Stage an anchored source or definition edit:
 ```json
 {"id":"keeper.state.tools:edit","arguments":{
   "command":"str_replace",
-  "path":"acme.starter:log_write",
+  "path":"acme.starter.sink:write",
   "old_str":"exact text from the inspected entry",
   "new_str":"replacement text"
 }}
@@ -360,8 +360,8 @@ tools instead of files. Entries are addressed as `namespace:name`; each carries
 a YAML definition and an optional source body:
 
 ```json
-{"command": "view", "path": "acme.starter:log_write"}
-{"command": "str_replace", "path": "acme.starter:log_write",
+{"command": "view", "path": "acme.starter.sink:write"}
+{"command": "str_replace", "path": "acme.starter.sink:write",
  "old_str": "exact text", "new_str": "replacement"}
 {"command": "create", "path": "acme.starter:helper",
  "file_text": "<definition>\nname: helper\nkind: function.lua\nsource: file://helper.lua\n</definition>\n<source>\nreturn {}\n</source>"}

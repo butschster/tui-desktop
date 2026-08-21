@@ -49,7 +49,9 @@ entry-name idiom is `dep.<vendor>.<module>`
 (`platform/uploads/src/_index.yaml` has `- name: dep.kickside.core` with
 `version: '>=0.1.17'`, `component: kickside/core`); older modules use
 `__dependency.<vendor>.<module>`. The name is arbitrary - `kind` +
-`component: <vendor>/<module>` + `version` are what matter.
+`component: <vendor>/<module>` + `version` are what matter. Declare `version`
+as `"*"` unless the module truly needs an API introduced in a specific
+release; locks pin concrete versions, source never does (page 15).
 
 `ns.requirement` entries are the module's configurable inputs and why it
 stays app-agnostic: it declares "I need a db / router / storage / scope"

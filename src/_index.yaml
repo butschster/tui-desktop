@@ -90,19 +90,7 @@ entries:
     contracts:
       - contract: kickside.data:writable
         methods:
-          write: acme.starter:log_write
-
-  # acme.starter:log_write
-  - name: log_write
-    kind: function.lua
-    meta:
-      comment: kickside.data:writable.write — persist the incoming item, log it, acknowledge.
-    source: file://log_write.lua
-    modules:
-      - logger
-    imports:
-      repo: acme.starter.persist:repo
-    method: write
+          write: acme.starter.sink:write
 
   # ─── UI (the starter page as a Wippy web component) ──────────────────
   # The module BUILDS (ui/), SHIPS (static/), and SERVES (its own http.static)

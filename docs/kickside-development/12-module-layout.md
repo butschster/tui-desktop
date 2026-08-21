@@ -57,9 +57,12 @@ Repos, readers/writers, projections, read models, and event schemas.
 
 The module's security policies.
 
-## `sink/`, `traits/`, `registry/`, `service/`
+## `sink/`, `blocks/`, `traits/`, `registry/`, `service/`
 
 - `sink/` - writable sink implementations.
+- `blocks/` - `kickside.block` catalog declarations and their function
+  implementations; a Block lowers onto the same persistence path the sink and
+  API use, never a second implementation.
 - `traits/` - agent-facing tools; the one idiom, no parallel `agent/`/`tools/`
   dirs. Inner folders per trait family (`traits/<family>/`) are allowed where
   they read better; lone tools stay flat at `traits/`.

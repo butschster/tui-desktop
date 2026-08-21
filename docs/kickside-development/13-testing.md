@@ -4,8 +4,9 @@ Every module proves itself two ways: colocated unit tests next to the source
 they cover, and a standalone harness under `test/` that boots the module in
 isolation and runs every suite against both SQLite and Postgres. Tests are
 registry entries; the vendor `wippy/test` module supplies the runner and
-assertion API. Backticked paths cite the Kickside monorepo (oauth is the
-reference harness); the examples are complete on their own.
+assertion API. This template's own `test/` directory is the reference harness;
+backticked paths cite the Kickside monorepo for additional worked examples,
+and the examples are complete on their own.
 
 ## Test Entry Shape
 
@@ -183,16 +184,24 @@ entries:
 The real file declares one such `ns.dependency` per transitive kickside dep
 (component, cron, core, views). Rules that make this work:
 
-- The bootloader dependency's `parameters` map each module's `ns.requirement`
-  entries (`target_db`, `user_security_scope`, `api_router`, ...) to harness
+- The bootloader dependency's `parameters` map requirement slots to harness
   resources; `wippy.migration:app_db -> app:db` makes migrations run against
   the harness database at boot.
-- The module under test loads via `directories.src: ../src`, so its own
-  requirement defaults resolve against the harness resources without an
-  explicit `ns.dependency` for it. Do not add one: wiring the same requirement
-  from two places clobbers the target entry.
+- The module under test loads through the workspace replacement in
+  `test/.wippy.yaml`, and because the harness namespace is `app`, the module's
+  own requirement `default:` values (`app:db`, `app:api`, `app:gateway`)
+  resolve against these resources without an explicit `ns.dependency` for it.
+  Do not add one: wiring the same requirement from two places clobbers the
+  target entry. Requirements without a default — the module's
+  `user_security_scope` — are bound by an `override:` in `test/.wippy.yaml`
+  (this template points it at the permissive `app:user` policy).
 - Harness-only entries (stubs, probes, fixtures) live here in `test/src/`,
   never in the module's `src/`.
+
+A monorepo-style harness (`platform/oauth/test/`, condensed above) wires every
+transitive kickside requirement through bootloader `parameters` instead; use
+that shape when the module pulls kickside dependencies whose requirements have
+no usable defaults.
 
 ### The Boot Gate
 
@@ -208,9 +217,11 @@ Migrations apply asynchronously at boot, so a `wait_for_boot` test in
   method: run
 ```
 
-The body polls `sql.get("app:db")` for a marker table - `pg_tables` first,
-falling back to `sqlite_master` so one gate works on both engines - and errors
-after a bounded number of attempts (the oauth gate polls 300 times at 100ms).
+The body polls `sql.get("app:db")` until a query against the module's own
+table succeeds - a plain `SELECT COUNT(*)` is engine-agnostic, so one gate
+works on SQLite and Postgres - and errors after a bounded number of attempts
+(this template's gate polls 300 times at 100ms; see
+`test/src/wait_for_boot.lua`).
 
 ## The SQLite + Postgres Matrix
 

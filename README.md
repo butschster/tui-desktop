@@ -160,7 +160,7 @@ The executable example is `acme/starter` until initialized:
 - `acme.starter:definition` is the authoritative root `ns.definition`.
 - `acme.starter:log` is a typed automation destination port.
 - `acme.starter:log_sink` binds the shared `kickside.data:writable` contract.
-- `acme.starter:log_write` validates and persists one acknowledged write.
+- `acme.starter.sink:write` validates and persists one acknowledged write.
 - `acme.starter.persist:repo` owns SQL access.
 - `acme.starter.migrations:01_create_log_entries` supports SQLite and Postgres.
 - `acme.starter.api:get_status.endpoint` exposes authenticated module status.

@@ -128,7 +128,7 @@ export default defineConfig({
 })
 ```
 
-Only externalize dependencies that the host import map supplies. Current module UI commonly externalizes `vue`, `@iconify/vue`, and `@wippy-fe/proxy`.
+Only externalize dependencies that the host import map supplies. The template's `ui/vite.config.ts` carries the full shell-provided roster (vue, pinia, vue-router, axios, nanoevents, luxon, @iconify/vue, iconify-icon, @tanstack/vue-query, sanitize-html, markdown-it, markdown-it-async, @wippy-fe/proxy, @wippy-fe/markdown-iframe, and `/^primevue\//`); every dependency the UI declares from that roster must stay external, and the module checks enforce it.
 
 ## Registry Wiring
 
