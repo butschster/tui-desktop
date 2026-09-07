@@ -45,7 +45,6 @@ local REPLY_TOPIC = "desktop.reply"
 local DEFAULT_COMMAND = "/bin/bash --noprofile --norc"
 local CLOSE_GRACE = "3s"
 
-local MIN_W, MIN_H = 12, 5
 
 -- Часы на панели задач должны идти и тогда, когда никто ничего не нажимает.
 -- Без этого тика кадр обновляется только на событии, и время на экране
@@ -127,6 +126,31 @@ local function run(options: any)
     -- под другим актором его может не быть, и тогда важно, чтобы отказ был
     -- назван, а не проглочен: он уезжает в restore_report.
     local RESTORE = options.restore ~= false
+
+    -- Толщина рамки. Раньше композитор считал её равной единице со всех
+    -- сторон — то есть знал про вид. Тема с полосой заголовка ВНУТРИ рамки
+    -- забирает сверху три строки, и окно, посчитанное по единице, отдало бы
+    -- программе на строку больше, чем видно.
+    local insets: any = {top = 1, bottom = 1, left = 1, right = 1}
+    if type(options.chrome.window_insets) == "function" then
+        local given: any = options.chrome.window_insets()
+        if type(given) == "table" then
+            for _, side in ipairs({"top", "bottom", "left", "right"}) do
+                local value = math.tointeger(tonumber(given[side]) or 1) or 1
+                if value < 0 then value = 0 end
+                insets[side] = value
+            end
+        end
+    end
+
+    local FRAME_W = (math.tointeger(insets.left) or 1) + (math.tointeger(insets.right) or 1)
+    local FRAME_H = (math.tointeger(insets.top) or 1) + (math.tointeger(insets.bottom) or 1)
+
+    -- Окно меньше рамки означает viewport нулевого размера — то есть отказ
+    -- на открытии, а не кривой вид. Границы считаются из рамки, чтобы смена
+    -- темы не разошлась с ними молча.
+    local MIN_W = math.max(12, FRAME_W + 4)
+    local MIN_H = math.max(5, FRAME_H + 3)
 
     -- Записать новое место значка. Раскладку хранит оболочка, поэтому
     -- композитор не пишет её сам, а просит — и откатывает значок, если
@@ -321,12 +345,16 @@ local function run(options: any)
     local function icon_grid()
         local grid: any = nil
         if type(chrome.icon_grid) == "function" then grid = chrome.icon_grid() end
-        if type(grid) ~= "table" then grid = {w = chrome.ICON_W, h = chrome.ICON_H} end
-        local gw = math.tointeger(tonumber(grid.w) or 14) or 14
-        local gh = math.tointeger(tonumber(grid.h) or 3) or 3
+        if type(grid) ~= "table" then
+            grid = {w = chrome.ICON_W, h = chrome.ICON_H, left = chrome.ICON_LEFT}
+        end
+        local gw = math.tointeger(tonumber(grid.w) or 12) or 12
+        local gh = math.tointeger(tonumber(grid.h) or 4) or 4
+        local gl = math.tointeger(tonumber(grid.left) or 1) or 1
         if gw < 1 then gw = 1 end
         if gh < 1 then gh = 1 end
-        return gw, gh
+        if gl < 1 then gl = 1 end
+        return gw, gh, gl
     end
 
     local function snap(value: any, step: any, base: any)
@@ -388,7 +416,7 @@ local function run(options: any)
         local status
         if top then
             status = string.format("%s · %dx%d · окон: %d · alt+n bash · alt+o приложения · alt+w закрыть · ctrl+q выход",
-                top.title, math.max(0, top.w - 2), math.max(0, top.h - 2), #windows)
+                top.title, math.max(0, top.w - FRAME_W), math.max(0, top.h - FRAME_H), #windows)
         else
             status = "нет окон · alt+n окно с bash · alt+o приложения · ctrl+q выход"
         end
@@ -415,8 +443,8 @@ local function run(options: any)
         local cursor = nil
         if top and top.cursor then
             cursor = {
-                x = clamp(top.x + top.cursor.x, 1, width),
-                y = clamp(top.y + top.cursor.y, 1, height),
+                x = clamp(top.x + (math.tointeger(insets.left) or 1) - 1 + top.cursor.x, 1, width),
+                y = clamp(top.y + (math.tointeger(insets.top) or 1) - 1 + top.cursor.y, 1, height),
                 visible = top.cursor.visible,
             }
         end
@@ -437,7 +465,7 @@ local function run(options: any)
         local x = clamp(spec.x or (2 + step), 1, math.max(1, width - w + 1))
         local y = clamp(spec.y or (desktop_top + step), desktop_top, math.max(desktop_top, height - h))
 
-        local view, verr = tty.viewport({width = w - 2, height = h - 2})
+        local view, verr = tty.viewport({width = w - FRAME_W, height = h - FRAME_H})
         if not view then return nil, tostring(verr) end
 
         local updates, uerr = view:updates()
@@ -504,7 +532,7 @@ local function run(options: any)
         window.h = clamp(tonumber(h) or window.h, MIN_H, desktop_height())
         window.x = clamp(window.x, 1, math.max(1, width - window.w + 1))
         window.y = clamp(window.y, desktop_top, math.max(desktop_top, height - window.h))
-        window.view:resize(window.w - 2, window.h - 2)
+        window.view:resize(window.w - FRAME_W, window.h - FRAME_H)
     end
 
     local function toggle_maximize(window)
@@ -582,8 +610,8 @@ local function run(options: any)
                 drag.active = false
                 local item = desktop_item(drag.id)
                 if item then
-                    local gw, gh = icon_grid()
-                    item.x = snap(item.x, gw, 1)
+                    local gw, gh, gl = icon_grid()
+                    item.x = snap(item.x, gw, gl)
                     item.y = snap(item.y, gh, desktop_top)
                     if move_item then
                         local ok, err = move_item(drag.id, item.x, item.y)
