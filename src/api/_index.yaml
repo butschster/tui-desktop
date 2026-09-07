@@ -120,7 +120,10 @@ entries:
       repo: butschster.tui_desktop.persist:repo
       apps: butschster.tui_desktop.persist:apps
     security:
-      policies: [butschster.tui_desktop.security:workshop_scope]
+      policies:
+        - butschster.tui_desktop.security:workshop_scope
+        # То же, что у композитора: хранилище читает имя базы из окружения.
+        - butschster.tui_desktop.security:storage_env
 
   - name: create_app.endpoint
     kind: http.endpoint
@@ -149,7 +152,10 @@ entries:
       repo: butschster.tui_desktop.persist:repo
       apps: butschster.tui_desktop.persist:apps
     security:
-      policies: [butschster.tui_desktop.security:workshop_scope]
+      policies:
+        - butschster.tui_desktop.security:workshop_scope
+        # То же, что у композитора: хранилище читает имя базы из окружения.
+        - butschster.tui_desktop.security:storage_env
 
   - name: list_apps.endpoint
     kind: http.endpoint
@@ -178,7 +184,10 @@ entries:
       repo: butschster.tui_desktop.persist:repo
       apps: butschster.tui_desktop.persist:apps
     security:
-      policies: [butschster.tui_desktop.security:workshop_scope]
+      policies:
+        - butschster.tui_desktop.security:workshop_scope
+        # То же, что у композитора: хранилище читает имя базы из окружения.
+        - butschster.tui_desktop.security:storage_env
 
   - name: delete_app.endpoint
     kind: http.endpoint

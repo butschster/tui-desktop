@@ -82,7 +82,11 @@ entries:
         short: Оконный десктоп в терминале
         security:
           actor: {id: butschster.tui_desktop.desktop:desktop}
-          policies: [butschster.tui_desktop.security:desktop_runtime]
+          policies:
+            - butschster.tui_desktop.security:desktop_runtime
+            # Хранилище окон читает имя базы из окружения (persist:repo), и без
+            # этого права оно молча берёт умолчание.
+            - butschster.tui_desktop.security:storage_env
     source: file://desktop.lua
     method: main
     modules:

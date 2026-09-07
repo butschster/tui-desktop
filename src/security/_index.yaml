@@ -37,6 +37,23 @@ entries:
       resources: "*"
       effect: allow
 
+  # butschster.tui_desktop.security:storage_env
+  #
+  # Одна переменная, а не «*»: имя базы, где лежат окна, приложение может
+  # переназначить. Право узкое нарочно — под этим же именем ходят токены, а
+  # `env.get` без права не отказывает громко: он возвращает nil, и `or "app:db"`
+  # рядом превращает отказ по правам в «человек ничего не переназначал».
+  - name: storage_env
+    kind: security.policy
+    meta:
+      comment: Право прочитать имя базы окон из окружения. Одна переменная, а не всё окружение.
+    policy:
+      actions:
+        - env.get
+      resources:
+        - BUTSCHSTER_TUI_DESKTOP_DB_ID
+      effect: allow
+
   # butschster.tui_desktop.security:desktop_command_channel
   - name: desktop_command_channel
     kind: security.policy

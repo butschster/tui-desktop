@@ -44,6 +44,7 @@ entries:
       test: wippy.test:test
       programs: butschster.tui_desktop.desktop:programs
       pixels: butschster.tui_desktop.desktop:pixels
+      apps: butschster.tui_desktop.persist:apps
       window_api: butschster.tui_desktop.desktop:window_api
     method: run
 

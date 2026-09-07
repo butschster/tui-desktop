@@ -12,6 +12,7 @@ local time = require("time")
 
 local programs = require("programs")
 local pixels = require("pixels")
+local apps = require("apps")
 local window_api = require("window_api")
 
 local NS = "butschster.tui_desktop"
@@ -240,7 +241,12 @@ local function mailbox(inbox: any)
             local picked = channel.select({
                 inbox:case_receive(), box.replies:case_receive(), expiry:case_receive()})
             if picked.channel == expiry or not picked.ok then
-                test.is_true(false, "не дождались " .. topic)
+                -- Первая мысль тут — «сообщение потерялось», и она почти
+                -- всегда неверна: упавший композитор выглядит снаружи ровно
+                -- так же. Имя в реестре осталось, экран держит последний кадр,
+                -- ответов нет. Смотреть надо на его экран (`view:snapshot(-1)`).
+                test.is_true(false, "не дождались " .. topic
+                    .. " (композитор мог упасть — посмотри на его экран)")
                 return {}
             end
             if picked.value:topic() == topic then return body_of(picked.value) end
@@ -303,7 +309,8 @@ local function ask_on(target, topic, body: any, reply_topic)
     while true do
         local picked = channel.select({replies:case_receive(), expiry:case_receive()})
         if picked.channel == expiry or not picked.ok then
-            test.is_true(false, "не дождались ответа на " .. tostring(topic))
+            test.is_true(false, "не дождались ответа на " .. tostring(topic)
+                .. " (композитор мог упасть — посмотри на его экран)")
             break
         end
         local got = body_of(picked.value)
@@ -326,6 +333,52 @@ local function windows_by_id(listing: any)
         out[tostring(window.id)] = window
     end
     return out
+end
+
+-- Модули, закрытые правами, и действия, которыми они открываются.
+--
+-- Смысл правила: объявленный модуль без права НЕ отказывает громко. `env.get`
+-- отдаёт nil, и соседнее `or умолчание` превращает отказ по правам в «никто
+-- ничего не назначал»; `db.get` роняет чтение уже в работе, когда виноватым
+-- выглядит запрос. Поэтому право проверяется на объявлении, а не на первом
+-- вызове.
+local GATED_MODULES = {
+    {module = "env", actions = {"env.get"}},
+    {module = "fs", actions = {"fs.get"}},
+    {module = "sql", actions = {"db.get"}},
+    {module = "registry", actions = {"registry.get", "registry.find", "registry.entry", "registry.apply"}},
+    {module = "exec", actions = {"exec.get", "exec.run"}},
+}
+
+-- Политики, которые несёт сама запись. У процесса это `security.policies`, у
+-- команды — тот же список внутри `meta.command.security`. Библиотека своих не
+-- несёт: она работает в правах того, кто её позвал, и правило к ней неприменимо.
+local function policies_of(entry: any)
+    local data = data_of(entry)
+    local meta = meta_of(entry)
+
+    local security: any = data.security
+    if type(security) ~= "table" then
+        local command: any = meta.command
+        if type(command) == "table" then security = command.security end
+    end
+    if type(security) ~= "table" then return nil end
+
+    local list: any = security.policies
+    if type(list) == "string" then return {list} end
+    if type(list) ~= "table" then return nil end
+    return list
+end
+
+local function granted_actions(policy_ids: any)
+    local granted = {}
+    for _, id in ipairs(policy_ids) do
+        local policy = registry.get(qualify(id, "butschster.tui_desktop.security"))
+        if policy then
+            for _, action in ipairs(actions_of(policy)) do granted[action] = true end
+        end
+    end
+    return granted
 end
 
 local function define_tests()
@@ -885,6 +938,64 @@ local function define_tests()
         end)
     end)
 
+    test.describe("butschster.tui_desktop права под объявленные модули", function()
+        test.it("на каждый модуль, закрытый правами, право выдано", function()
+            -- Этот класс стоил здесь трёх часов и выглядел как четыре разные
+            -- проблемы подряд: композитор объявлял `env`, права на него не
+            -- имел, и переназначенное имя базы молча не работало.
+            local entries = registry.find({})
+            test.not_nil(entries, "реестр обязан читаться")
+
+            local checked = 0
+            for _, found in ipairs(entries :: {any}) do
+                local entry: any = found
+                local id = tostring(entry.id)
+                if id:find("butschster.tui_desktop", 1, true) == 1 then
+                    local policy_ids = policies_of(entry)
+                    local modules = data_of(entry).modules
+                    if policy_ids and type(modules) == "table" then
+                        local granted = granted_actions(policy_ids)
+                        for _, gate in ipairs(GATED_MODULES) do
+                            if has(modules, gate.module) then
+                                checked = checked + 1
+                                local ok = false
+                                for _, action in ipairs(gate.actions) do
+                                    if granted[action] then ok = true end
+                                end
+                                test.is_true(ok, id .. " объявляет модуль " .. gate.module
+                                    .. ", а права на него не выдано: он будет молчать, а не отказывать")
+                            end
+                        end
+                    end
+                end
+            end
+
+            test.is_true(checked > 0, "правило обязано хоть что-то проверить, иначе оно зелёное впустую")
+        end)
+
+        test.it("окно из мастерской не просит модулей, которых ему нечем открыть", function()
+            -- У собранного окна политика одна и известна заранее, поэтому
+            -- правило проверяется прямо на белом списке: модуль, который окно
+            -- вправе попросить, обязан быть открыт этой политикой.
+            local granted = granted_actions({"butschster.tui_desktop.security:app_window_scope"})
+            for _, gate in ipairs(GATED_MODULES) do
+                if apps.ALLOWED_MODULES[gate.module] then
+                    local ok = false
+                    for _, action in ipairs(gate.actions) do
+                        if granted[action] then ok = true end
+                    end
+                    test.is_true(ok, "окну разрешён модуль " .. gate.module
+                        .. ", а права на него у app_window_scope нет")
+                end
+            end
+
+            -- И контроль, что правило не выродилось в пустой цикл: `sql` в
+            -- списке есть, и право под него выдано.
+            test.is_true(apps.ALLOWED_MODULES.sql == true)
+            test.is_true(granted["db.get"] == true)
+        end)
+    end)
+
     test.describe("butschster.tui_desktop сборка пиксельного кадра", function()
         -- Арифметика без терминала и без графики: сюда приезжает то, что
         -- вернула тема, и здесь решается, попадёт ли оно в кадр.
@@ -930,6 +1041,43 @@ local function define_tests()
             test.eq(#complaints, 4, "и каждое негодное обязано быть названо")
             test.is_true(tostring(complaints[4]):find("дважды", 1, true) ~= nil,
                 "повтор id — это спор о том, что показать, то есть мигание")
+        end)
+
+        test.it("каждая вынесенная функция вызвана хотя бы одной проверкой", function()
+            -- Невызванная функция зелёная в любом наборе — сегодня это стоило
+            -- падения темы на первом же вызове функции, которую до того не
+            -- звал никто. Поэтому список экспорта сверяется со списком
+            -- покрытого: новая функция без проверки красит набор.
+            local covered: any = {
+                pixels = {check = true, blank_under = true, hits = true, frame = true},
+                programs = {window_type = true, in_menu = true, content = true,
+                    item = true, menu = true},
+            }
+
+            for name, value in pairs(pixels) do
+                if type(value) == "function" then
+                    test.is_true(covered.pixels[name] == true,
+                        "pixels." .. name .. " не вызвана ни одной проверкой")
+                end
+            end
+            for name, value in pairs(programs) do
+                if type(value) == "function" then
+                    test.is_true(covered.programs[name] == true,
+                        "programs." .. name .. " не вызвана ни одной проверкой")
+                end
+            end
+        end)
+
+        test.it("неизвестное window_content считается ячейками и называется", function()
+            -- Тот же порядок, что у типа окна: опечатка не прячет программу, но
+            -- и не молчит.
+            local kind, odd = programs.content({window_content = "плитка"})
+            test.eq(kind, programs.DEFAULT_CONTENT)
+            test.eq(odd, "плитка")
+
+            local plain, quiet = programs.content({})
+            test.eq(plain, "cells", "молчащая запись ведёт себя как раньше")
+            test.is_nil(quiet)
         end)
 
         test.it("плоский список попаданий не угадывает, а жалуется", function()
@@ -1045,6 +1193,75 @@ local function define_tests()
                 channel.select({time.after("100ms"):case_receive()})
             end
             test.is_true(gone, "поставщик обязан уйти вместе со своим окном")
+
+            process.terminate(tostring(desk.pid))
+        end)
+
+        test.it("смерть поставщика возвращает вид в ожидание, а не оставляет вчерашнее", function()
+            -- Вид, застывший на последнем состоянии, выглядит живым и врёт тем
+            -- убедительнее, чем дольше висит.
+            local service = "butschster.tui_desktop.test.view.orphan"
+            local provider = "butschster.tui_desktop.test.provider"
+            local desk = boot_composer(service)
+
+            tell_desktop(service, "desktop.open", {entry = "app:view_window"})
+            local alive: any = nil
+            local deadline = time.now():unix_nano() + 8000000000
+            while time.now():unix_nano() < deadline do
+                alive = process.registry.lookup(provider)
+                if alive then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.not_nil(alive, "поставщик обязан подняться")
+
+            process.send(provider, "probe.push", {})
+            local ready: any = nil
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                ready = ask_fresh(service, "desktop.list", {})
+                if ready.windows[1] ~= nil and ready.windows[1].waiting == false then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.is_true(ready.windows[1].waiting == false, "состояние доехало")
+
+            -- Гасим поставщика, окно оставляем.
+            process.terminate(tostring(alive))
+            local orphan: any = nil
+            deadline = time.now():unix_nano() + 8000000000
+            while time.now():unix_nano() < deadline do
+                orphan = ask_fresh(service, "desktop.list", {})
+                if orphan.windows[1] ~= nil and orphan.windows[1].waiting == true then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.is_true(orphan.windows[1].waiting == true,
+                "без поставщика вид обязан вернуться в ожидание")
+            test.is_true(tostring(orphan.notice):find("поставщик", 1, true) ~= nil,
+                "и сказать об этом человеку: [" .. tostring(orphan.notice) .. "]")
+
+            process.terminate(tostring(desk.pid))
+        end)
+
+        test.it("вид переживает изменение размера: viewport'а у него нет", function()
+            -- У окна с процессом размер меняется вместе с viewport'ом, у вида
+            -- viewport'а нет вовсе — и путь, который этого не знает, роняет
+            -- композитор на первой же команде resize.
+            local service = "butschster.tui_desktop.test.view.resize"
+            local box = mailbox(process.inbox())
+            local desk = boot_composer(service)
+
+            local opened = ask_desktop(service, box, "desktop.open",
+                {entry = "app:view_static", w = 30, h = 8})
+            test.is_true(opened.ok == true, "вид не открылся: " .. tostring(opened.error))
+
+            local resized = ask_desktop(service, box, "desktop.resize",
+                {id = tostring(opened.window.id), w = 44, h = 12})
+            test.is_true(resized.ok == true, "resize вида обязан работать: " .. tostring(resized.error))
+            test.eq(math.tointeger(resized.window.width) or 0, 44)
+            test.eq(math.tointeger(resized.window.height) or 0, 12)
+
+            -- И композитор жив: следующая команда отвечает.
+            local after = ask_desktop(service, box, "desktop.list", {})
+            test.eq(#after.windows, 1, "композитор обязан пережить resize вида")
 
             process.terminate(tostring(desk.pid))
         end)
