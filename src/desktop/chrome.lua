@@ -1,4 +1,9 @@
--- Хром окна: рамка, заголовок, кнопки, таббар.
+-- Тема композитора: единственное, что композитор знает о виде.
+--
+-- Композитор зовёт только функции контракта (README, «Контракт темы») и сам
+-- не решает ни про рамки, ни про полосы, ни про то, сколько строк занято
+-- сверху и снизу. Вторая оболочка приносит другую тему и получает другой
+-- вид, не трогая механику окон.
 --
 -- Здесь нет ни одного вызова, который уходит в рантайм: только строки и
 -- арифметика. Поэтому файл — библиотека, а не процесс, и его можно звать
@@ -40,6 +45,23 @@ local styles = {
     bar        = tty.style():foreground("250"):background("236"),
     hint       = tty.style():faint(),
 }
+
+-- Сколько строк хром забирает сверху и снизу. Рабочий стол — строки
+-- layout.top + 1 .. height - layout.bottom.
+--
+-- Раньше это число было константой внутри композитора, и панель задач снизу
+-- поставить было нельзя, не правя композитор: основа снова знала бы про вид.
+function chrome.layout(width: any, height: any)
+    return {top = 1, bottom = 1}
+end
+
+-- Фон рабочего стола и значки на нём. Здесь нет ни того, ни другого: холст
+-- уже очищен, а раскладку эта оболочка не показывает — окна открываются из
+-- каталога по alt+o. Тема с бирюзовым столом заливает фон и рисует значки
+-- сама, возвращая разметку попаданий; отсутствие ответа читается как «на
+-- столе нечего нажимать».
+function chrome.fill(canvas, width: any, height: any, state)
+end
 
 -- clip(text, cells) — обрезать по ЯЧЕЙКАМ, а не по байтам.
 --
@@ -123,10 +145,18 @@ function chrome.window(canvas, window, focused)
     end
 end
 
--- Полоса окон сверху. Возвращает ещё и разметку попаданий, чтобы клик по
--- вкладке не пришлось считать второй раз по другой формуле.
-function chrome.tabbar(canvas, width: any, windows, focused_id)
-    local segments, column = {}, 1
+-- Полосы хрома: полоса окон сверху и статусная строка снизу.
+--
+-- Возвращает разметку попаданий — по ней композитор считает клик. Отдельная
+-- формула для клика однажды разъедется с отрисовкой, и кнопка окажется на
+-- символ левее, чем выглядит; поэтому таблица одна на оба дела.
+--
+-- state = {windows, focused_id, menu_open, status, clock}
+function chrome.bars(canvas, width: any, height: any, state)
+    local windows = type(state.windows) == "table" and state.windows or {}
+    local focused_id = state.focused_id
+
+    local hits, column = {}, 1
     local parts = {}
 
     for index, window in ipairs(windows) do
@@ -135,12 +165,15 @@ function chrome.tabbar(canvas, width: any, windows, focused_id)
         if column + cells > width then break end
         local style = window.id == focused_id and styles.tab_active or styles.tab_idle
         parts[#parts + 1] = style:render(label)
-        segments[#segments + 1] = {id = window.id, from = column, to = column + cells - 1}
+        hits[#hits + 1] = {row = 1, from = column, to = column + cells - 1, id = window.id}
         column = column + cells
     end
 
     canvas:put(1, 1, styles.bar:width(width):render(table.concat(parts)), width)
-    return segments
+
+    local status = type(state.status) == "string" and state.status or ""
+    canvas:put(1, height, styles.bar:width(width):render(clip(" " .. status .. " ", width)), width)
+    return hits
 end
 
 -- Меню приложений: список окон, которые объявило приложение. Пустой список
@@ -166,6 +199,8 @@ function chrome.menu(canvas, width: any, height: any, items, failure)
         styles.focused:render("╰" .. string.rep(BORDER.horizontal, span) .. "╯"), box_w)
     canvas:put(left + 2, top, styles.title:render(" приложения "), box_w - 4)
 
+    local hits = {}
+
     if failure then
         -- Отказ реестра и пустой каталог выглядят одинаково, если не назвать
         -- причину: человек ищет ошибку в своём приложении, а её там нет.
@@ -176,13 +211,11 @@ function chrome.menu(canvas, width: any, height: any, items, failure)
         for index, item in ipairs(items) do
             local label = " " .. index .. "  " .. clip(item.title, span - 6) .. " "
             canvas:put(left + 1, top + index, styles.tab_idle:width(span):render(label), span)
+            hits[#hits + 1] = {row = top + index, from = left + 1, to = left + span, index = index}
         end
     end
     canvas:put(left + 2, top + box_h - 1, styles.hint:render(" цифра — открыть · esc — закрыть "), span)
-end
-
-function chrome.statusbar(canvas, width: any, height: any, text)
-    canvas:put(1, height, styles.bar:width(width):render(clip(" " .. text .. " ", width)), width)
+    return hits
 end
 
 function chrome.empty_desktop(canvas, width: any, height: any, text)

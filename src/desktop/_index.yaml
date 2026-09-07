@@ -6,7 +6,7 @@ entries:
   - name: chrome
     kind: library.lua
     meta:
-      comment: Рамки, заголовки, кнопки и полоса окон. Чистые строки — ни одного вызова в рантайм.
+      comment: Штатная тема — рамки, заголовки, кнопки, полоса окон и статусная строка. Чистые строки без единого вызова в рантайм.
     source: file://chrome.lua
     modules:
       - tty
@@ -19,6 +19,29 @@ entries:
     source: file://window_api.lua
     modules:
       - process
+
+  # butschster.tui_desktop.desktop:library
+  #
+  # Механика композитора без вида. Вторая оболочка зовёт её со своей темой:
+  # так вид меняется, не копируя хостинг окон, PTY и командный канал.
+  - name: library
+    kind: library.lua
+    meta:
+      comment: Композитор как вызываемая библиотека — run(options) с темой в options.chrome. Контракт темы описан в README.
+    source: file://library.lua
+    modules:
+      - channel
+      - env
+      - json
+      - logger
+      - process
+      - registry
+      - sql
+      - time
+      - tty
+    imports:
+      repo: butschster.tui_desktop.persist:repo
+      apps: butschster.tui_desktop.persist:apps
 
   # butschster.tui_desktop.desktop:desktop
   - name: desktop
@@ -44,9 +67,8 @@ entries:
       - time
       - tty
     imports:
+      library: butschster.tui_desktop.desktop:library
       chrome: butschster.tui_desktop.desktop:chrome
-      repo: butschster.tui_desktop.persist:repo
-      apps: butschster.tui_desktop.persist:apps
 
   # butschster.tui_desktop.desktop:window_pty
   - name: window_pty

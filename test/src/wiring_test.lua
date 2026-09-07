@@ -12,6 +12,7 @@ local TERMINAL_ID = "butschster.tui_desktop:terminal"
 local WORKERS_ID = "butschster.tui_desktop:workers"
 local EXEC_ID = "butschster.tui_desktop:exec"
 local DESKTOP_ID = "butschster.tui_desktop.desktop:desktop"
+local LIBRARY_ID = "butschster.tui_desktop.desktop:library"
 local CHROME_ID = "butschster.tui_desktop.desktop:chrome"
 local WINDOW_ID = "butschster.tui_desktop.desktop:window_pty"
 local CONTROL_ID = "butschster.tui_desktop.api:control"
@@ -157,7 +158,9 @@ local function define_tests()
             test.is_true(has(actions, "registry.apply"),
                 "без registry.apply окна не переживут перезапуск")
 
-            local data = data_of(get(DESKTOP_ID))
+            -- Хранилище читает библиотека композитора, а не оболочка: вид
+            -- сменился, а восстановление окон осталось общим.
+            local data = data_of(get(LIBRARY_ID))
             test.is_true(has(data.modules or {}, "sql"),
                 "композитору нужен sql, чтобы прочитать хранилище")
             local imports = data.imports or {}
@@ -165,6 +168,26 @@ local function define_tests()
                 "butschster.tui_desktop.persist:repo")
             test.eq(qualify(imports.apps, "butschster.tui_desktop.persist"),
                 "butschster.tui_desktop.persist:apps")
+        end)
+
+        test.it("держит вид отдельно от механики окон", function()
+            -- Ради этого дельта и делалась: вторая оболочка приносит свою
+            -- тему и получает другой вид, не копируя хостинг окон, PTY и
+            -- командный канал. Если механика снова начнёт импортировать
+            -- конкретную тему, копия станет единственным способом сменить
+            -- вид — и разойдётся с оригиналом на первой же правке.
+            local library = data_of(get(LIBRARY_ID))
+            test.is_nil((library.imports or {}).chrome,
+                "механика композитора не должна знать про конкретную тему")
+
+            local shell = data_of(get(DESKTOP_ID))
+            local imports = shell.imports or {}
+            test.eq(qualify(imports.library, "butschster.tui_desktop.desktop"),
+                "butschster.tui_desktop.desktop:library",
+                "оболочка зовёт механику")
+            test.eq(qualify(imports.chrome, "butschster.tui_desktop.desktop"),
+                "butschster.tui_desktop.desktop:chrome",
+                "оболочка выбирает тему")
         end)
 
         test.it("даёт окну попросить десктоп, но не запустить что-либо", function()
