@@ -56,6 +56,22 @@ local WINDOW_META_TYPE = programs.WINDOW_META_TYPE
 -- его съел бы чужой цикл.
 local REPLY_TOPIC = window_api.REPLY_TOPIC
 
+-- Команды, адресованные конкретному окну. Список нужен, чтобы отличать «нет
+-- такого окна» от «нет такой команды»: пока их различал только порядок
+-- проверок, ЛЮБАЯ неизвестная команда отвечала «нет окна nil» — то есть
+-- отправитель шёл искать опечатку в идентификаторе, которого не посылал, а
+-- ветка про неизвестную команду была недостижима вовсе.
+local WINDOW_COMMANDS = {
+    ["desktop.close"] = true,
+    ["desktop.focus"] = true,
+    ["desktop.move"] = true,
+    ["desktop.resize"] = true,
+    ["desktop.minimize"] = true,
+    ["desktop.screen"] = true,
+    ["desktop.type"] = true,
+    ["desktop.key"] = true,
+}
+
 local DEFAULT_COMMAND = "/bin/bash --noprofile --norc"
 local CLOSE_GRACE = "3s"
 
@@ -1050,6 +1066,24 @@ local function run(options: any)
         process.send(to, REPLY_TOPIC, body)
     end
 
+    -- Отказ, который некому услышать.
+    --
+    -- Команды от окна приходят без обратного адреса: окно не ждёт ответа,
+    -- чтобы не морозить свой кадр. Значит «нет такого окна» и «не знаю такой
+    -- команды» уходили В НИКУДА, и опечатка в идентификаторе выглядела как
+    -- выполненная команда — то же молчание, что и у зашитого имени
+    -- композитора. Поэтому такой отказ уходит в строку состояния (её видит
+    -- человек) и в лог, а строка отдаётся командным каналом.
+    local function refuse(reason, to)
+        if to ~= "" then
+            reply({ok = false, error = reason}, to)
+            return false
+        end
+        notice = reason
+        log:warn("команда отклонена, а спросившего нет", {reason = reason})
+        return true
+    end
+
     local function handle_command(topic, body, from: any)
         local to = ""
         if type(body.reply_to) == "string" then to = body.reply_to end
@@ -1061,23 +1095,40 @@ local function run(options: any)
             local top = focused()
             reply({ok = true, windows = list, focused = top and top.id or nil,
                 screen = {width = width, height = height},
+                -- Строка состояния: единственное место, где отказ виден
+                -- человеку. Наружу она отдаётся, чтобы «отказ показан» можно
+                -- было проверить, а не рассматривать глазами.
+                notice = notice,
                 restore = restore_report}, to)
             return false
         end
 
+        if topic == "desktop.refresh" then
+            reload_desktop()
+            reply({ok = true, items = #desk.items, failure = desk.failure}, to)
+            return true
+        end
+
         if topic == "desktop.open" then
             local opened, err = open_window(body, from)
-            if not opened then reply({ok = false, error = err}, to); return false end
+            if not opened then return refuse(tostring(err), to) end
             raise(opened)
             reply({ok = true, window = describe(opened)}, to)
             return true
         end
 
-        -- Всё, что ниже, адресовано конкретному окну: молчаливое «нет
-        -- такого» превратило бы опечатку в id в успешную команду.
+        -- Дальше только команды, адресованные конкретному окну. Порядок
+        -- проверок тут — не стиль: пока «нет окна» стояло первым, ЛЮБАЯ
+        -- неизвестная команда отвечала «нет окна nil», отправитель шёл искать
+        -- опечатку в идентификаторе, которого не посылал, а ветка про
+        -- неизвестную команду была недостижима вовсе.
+        if not WINDOW_COMMANDS[topic] then
+            return refuse("неизвестная команда " .. tostring(topic), to)
+        end
         if not window then
-            reply({ok = false, error = "нет окна " .. tostring(body.id)}, to)
-            return false
+            -- Молчаливое «нет такого» превратило бы опечатку в id в успешную
+            -- команду.
+            return refuse("нет окна " .. tostring(body.id), to)
         end
 
         if topic == "desktop.close" then
@@ -1105,8 +1156,7 @@ local function run(options: any)
             return false
         elseif topic == "desktop.type" then
             if not window.ready then
-                reply({ok = false, error = "окно ещё не приняло ввод"}, to)
-                return false
+                return refuse("окно " .. window.id .. " ещё не приняло ввод", to)
             end
             local sent = 0
             for _, char in ipairs(runes(type(body.text) == "string" and body.text or "")) do
@@ -1131,14 +1181,7 @@ local function run(options: any)
             return false
         end
 
-        if topic == "desktop.refresh" then
-            reload_desktop()
-            reply({ok = true, items = #desk.items, failure = desk.failure}, to)
-            return true
-        end
-
-        reply({ok = false, error = "неизвестная команда " .. tostring(topic)}, to)
-        return false
+        return refuse("неизвестная команда " .. tostring(topic), to)
     end
 
     -- ─── цикл ────────────────────────────────────────────────────────────

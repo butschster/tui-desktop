@@ -149,15 +149,27 @@ local function boot_composer(service)
     test.is_nil(err)
     test.not_nil(pid, "композитор не запустился")
 
+    local desk: any = {pid = pid, view = view}
+
     -- Ждём регистрации, а не спим наугад: имя появляется, когда композитор
     -- готов принимать команды.
     local deadline = time.now():unix_nano() + 8000000000
     while time.now():unix_nano() < deadline do
-        if process.registry.lookup(service) then return pid end
+        if process.registry.lookup(service) then return desk end
         channel.select({time.after("100ms"):case_receive()})
     end
     test.is_true(false, "композитор не зарегистрировался под именем " .. service)
-    return pid
+    return desk
+end
+
+-- Щелчок мышью — тот же путь, которым идёт настоящая мышь: событие едет в
+-- экран композитора. Клавиатурных сокращений в проверках здесь нет намеренно:
+-- проверка, которой нужен свой способ нажать, дописывает его в интерфейс.
+local function click(desk: any, x, y)
+    local pressed = desk.view:send({type = "mouse", action = "press",
+        button = "left", x = x, y = y})
+    test.is_true(pressed == true, "щелчок не доехал до экрана композитора")
+    desk.view:send({type = "mouse", action = "release", button = "left", x = x, y = y})
 end
 
 -- Разговор с композитором: сообщения приходят вперемешку (ответ композитора и
@@ -186,6 +198,15 @@ local function mailbox(inbox: any)
     end
 
     return box
+end
+
+-- Команда БЕЗ обратного адреса — так их шлёт окно: ответа оно не ждёт.
+-- Отказ на такую команду и был молчанием, ради которого сделана строка
+-- состояния.
+local function tell_desktop(service, topic, body: any)
+    local payload: any = type(body) == "table" and body or {}
+    local sent, serr = process.send(service, topic, payload)
+    test.is_true(sent == true, "команда не дошла до композитора: " .. tostring(serr))
 end
 
 local function ask_desktop(service, box, topic, body: any)
@@ -431,7 +452,7 @@ local function define_tests()
             local box = mailbox(inbox)
             process.registry.register(watcher)
 
-            local composer = boot_composer(service)
+            local desk = boot_composer(service)
 
             -- Окно открывает командный канал снаружи: у него родителя нет.
             local opened = ask_desktop(service, box, "desktop.open",
@@ -486,7 +507,119 @@ local function define_tests()
                 "обычная программа не принадлежит открывшему и остаётся")
 
             process.registry.unregister(watcher)
-            process.terminate(tostring(composer))
+            process.terminate(tostring(desk.pid))
+        end)
+    end)
+
+    test.describe("butschster.tui_desktop порядок окон и фокус", function()
+        -- Композитор здесь настоящий, экран — viewport теста, а щелчки едут в
+        -- него настоящими событиями мыши. Раньше весь этот класс проверок
+        -- считался доступным только глазом через пробник.
+        test.it("щелчок поднимает окно, закрытие верхнего отдаёт фокус соседу", function()
+            local service = "butschster.tui_desktop.test.zorder"
+            local inbox = process.inbox()
+            local box = mailbox(inbox)
+            local desk = boot_composer(service)
+
+            -- Два окна внахлёст, координаты названы явно: щёлкать надо по
+            -- месту, а не по тому, куда лёг каскад.
+            local first = ask_desktop(service, box, "desktop.open",
+                {entry = "app:idle_window", title = "Первое", x = 2, y = 3, w = 30, h = 8})
+            local second = ask_desktop(service, box, "desktop.open",
+                {entry = "app:idle_window", title = "Второе", x = 10, y = 5, w = 30, h = 8})
+            test.is_true(first.ok == true and second.ok == true, "окна не открылись")
+            local low = tostring(first.window.id)
+            local high = tostring(second.window.id)
+
+            local listing = ask_desktop(service, box, "desktop.list", {})
+            test.eq(listing.focused, high, "новое окно получает фокус")
+            test.eq(tostring(listing.windows[#listing.windows].id), high,
+                "новое окно ложится поверх остальных")
+
+            -- Отказ, которого никто не ждёт: команда от окна приходит без
+            -- обратного адреса, и раньше «нет такого окна» уходило в никуда.
+            tell_desktop(service, "desktop.focus", {id = "w404"})
+            local told: any = nil
+            local deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                told = ask_desktop(service, box, "desktop.list", {})
+                if type(told.notice) == "string" and told.notice ~= "" then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.is_true(type(told.notice) == "string" and told.notice:find("w404", 1, true) ~= nil,
+                "отказ обязан быть видимым: строка состояния молчит про w404")
+            test.eq(told.focused, high, "промах по идентификатору фокус не двигает")
+
+            -- Щелчок по пустому столу. Он же служит вехой: композитор чистит
+            -- строку состояния, и по её исчезновению видно, что событие
+            -- обработано — ждать наугад не нужно.
+            click(desk, 60, 20)
+            local cleared: any = nil
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                cleared = ask_desktop(service, box, "desktop.list", {})
+                if cleared.notice == "" then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.eq(cleared.notice, "", "щелчок по столу не обработан — веха не сработала")
+            test.eq(cleared.focused, high, "щелчок мимо окон никого не поднимает")
+
+            -- Щелчок по нижнему окну — по той его части, которую верхнее не
+            -- закрывает. Это и есть поднятие мышью.
+            click(desk, 4, 8)
+            local raised: any = nil
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                raised = ask_desktop(service, box, "desktop.list", {})
+                if raised.focused == low then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.eq(raised.focused, low, "щелчок по окну обязан поднять его")
+            test.eq(tostring(raised.windows[#raised.windows].id), low,
+                "поднятое окно становится верхним в порядке z")
+
+            -- Закрытие верхнего: фокус обязан достаться соседу, а не пропасть.
+            ask_desktop(service, box, "desktop.close", {id = low})
+            local left: any = nil
+            deadline = time.now():unix_nano() + 8000000000
+            while time.now():unix_nano() < deadline do
+                left = ask_desktop(service, box, "desktop.list", {})
+                if #left.windows == 1 then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.eq(#left.windows, 1, "закрытое окно должно было уйти")
+            test.eq(left.focused, high, "фокус обязан достаться оставшемуся окну")
+
+            process.terminate(tostring(desk.pid))
+        end)
+
+        test.it("промах по идентификатору отвечает отказом тому, кто спросил", function()
+            -- У командного канала обратный адрес есть, и ему отказ приходит
+            -- ответом. Проверка парная к строке состояния: там отказ виден
+            -- человеку, здесь — спросившему.
+            local service = "butschster.tui_desktop.test.missing"
+            local box = mailbox(process.inbox())
+            local desk = boot_composer(service)
+
+            local answer = ask_desktop(service, box, "desktop.focus", {id = "w404"})
+            test.is_true(answer.ok == false, "промах обязан быть отказом, а не успехом")
+            test.is_true(tostring(answer.error):find("w404", 1, true) ~= nil,
+                "отказ обязан называть идентификатор")
+
+            local unknown = ask_desktop(service, box, "desktop.wiggle", {})
+            test.is_true(unknown.ok == false, "неизвестная команда — тоже отказ")
+            test.is_true(tostring(unknown.error):find("wiggle", 1, true) ~= nil,
+                "отказ обязан называть команду")
+
+            -- Команда, которая окна не называет, и не должна: перечитать
+            -- раскладку стола. Пока «нет окна» проверялось первым, она
+            -- отвечала «нет окна nil» и не выполнялась вовсе — а зовёт её
+            -- оболочка каждый раз, когда человек переставил значок.
+            local refreshed = ask_desktop(service, box, "desktop.refresh", {})
+            test.is_true(refreshed.ok == true,
+                "desktop.refresh обязан выполняться: " .. tostring(refreshed.error))
+
+            process.terminate(tostring(desk.pid))
         end)
     end)
 
