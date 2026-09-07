@@ -128,6 +128,13 @@ local function run(options: any)
     -- назван, а не проглочен: он уезжает в restore_report.
     local RESTORE = options.restore ~= false
 
+    -- Записать новое место значка. Раскладку хранит оболочка, поэтому
+    -- композитор не пишет её сам, а просит — и откатывает значок, если
+    -- запись не удалась. Отказ, после которого значок остался на новом
+    -- месте, соврал бы: до перезапуска он там, после — нет.
+    local move_item: any = type(options.move_desktop_item) == "function"
+        and options.move_desktop_item or nil
+
     local events = assert(tty.events())
     assert(tty.start())
     assert(tty.mouse(true))
@@ -250,6 +257,12 @@ local function run(options: any)
     -- Двойной щелчок: как в оболочке, откуда взят вид. Одиночный щелчок,
     -- запускающий программу, — ловушка: по значку кликают, чтобы выбрать.
     local last_click: any = {x = 0, y = 0, at = 0}
+    -- Выделение живёт здесь, а не в раскладке: его меняет каждый щелчок, а
+    -- раскладка — то, что переживает перезапуск.
+    local selected_id: any = nil
+    -- Причина последнего отказа. Показывается вместо статуса: у оболочки
+    -- терминала нет ни лога, ни всплывающих окон, и рассказать иначе негде.
+    local notice = ""
     local menu_hits: any = {}
     local clock = ""
 
@@ -302,6 +315,45 @@ local function run(options: any)
         }
     end
 
+    -- Шаг сетки значков объявляет тема: она рисует значок и знает, сколько
+    -- он занимает. Композитор только выравнивает по нему брошенный значок —
+    -- иначе значок встаёт между шагами и перекрывается попаданием соседа.
+    local function icon_grid()
+        local grid: any = nil
+        if type(chrome.icon_grid) == "function" then grid = chrome.icon_grid() end
+        if type(grid) ~= "table" then grid = {w = chrome.ICON_W, h = chrome.ICON_H} end
+        local gw = math.tointeger(tonumber(grid.w) or 14) or 14
+        local gh = math.tointeger(tonumber(grid.h) or 3) or 3
+        if gw < 1 then gw = 1 end
+        if gh < 1 then gh = 1 end
+        return gw, gh
+    end
+
+    local function snap(value: any, step: any, base: any)
+        local origin = math.tointeger(tonumber(base) or 1) or 1
+        local size = math.tointeger(tonumber(step) or 1) or 1
+        if size < 1 then size = 1 end
+        local point = math.tointeger(tonumber(value) or origin) or origin
+        local offset = point - origin
+        if offset < 0 then offset = 0 end
+        local cell = math.tointeger((offset + size // 2) // size) or 0
+        return origin + cell * size
+    end
+
+    local function desktop_item(id)
+        for _, item in ipairs(desk.items) do
+            if item.id == id then return item end
+        end
+        return nil
+    end
+
+    local function desktop_spot(x, y)
+        for _, spot in ipairs(desk_hits) do
+            if y == spot.row and x >= spot.from and x <= spot.to then return spot end
+        end
+        return nil
+    end
+
     local function draw()
         canvas:clear(" ")
 
@@ -314,6 +366,7 @@ local function run(options: any)
             bottom = desktop_last,
             items = desk.items,
             failure = desk.failure,
+            selected = selected_id,
         })
         if type(painted) == "table" then desk_hits = painted end
 
@@ -339,6 +392,8 @@ local function run(options: any)
         else
             status = "нет окон · alt+n окно с bash · alt+o приложения · ctrl+q выход"
         end
+        if notice ~= "" then status = notice end
+
         bar_hits = chrome.bars(canvas, width, height, {
             windows = windows,
             focused_id = focused_id,
@@ -500,6 +555,15 @@ local function run(options: any)
     end
 
     local function handle_mouse(event)
+        if event.action == "motion" and drag.active and drag.mode == "icon" then
+            local item = desktop_item(drag.id)
+            if not item then drag.active = false; return end
+            item.x = clamp(event.x - drag.dx, 1, width)
+            item.y = clamp(event.y - drag.dy, desktop_top, desktop_last)
+            draw()
+            return
+        end
+
         if event.action == "motion" and drag.active then
             local window = find(drag.id)
             if not window then drag.active = false; return end
@@ -514,6 +578,28 @@ local function run(options: any)
         end
 
         if event.action == "release" then
+            if drag.active and drag.mode == "icon" then
+                drag.active = false
+                local item = desktop_item(drag.id)
+                if item then
+                    local gw, gh = icon_grid()
+                    item.x = snap(item.x, gw, 1)
+                    item.y = snap(item.y, gh, desktop_top)
+                    if move_item then
+                        local ok, err = move_item(drag.id, item.x, item.y)
+                        if not ok then
+                            -- Значок обязан вернуться туда, откуда взят:
+                            -- иначе до перезапуска он на новом месте, а
+                            -- после — на старом, и человек решит, что
+                            -- перезапуск его потерял.
+                            item.x, item.y = drag.from_x, drag.from_y
+                            notice = "значок не переехал: " .. tostring(err)
+                        end
+                    end
+                end
+                draw()
+                return
+            end
             if drag.active then drag.active = false; draw() end
             return
         end
@@ -569,27 +655,43 @@ local function run(options: any)
 
         local window = hit(event.x, event.y)
         if not window then
-            -- Пустое место: под окнами лежит стол со значками. Открывает
-            -- двойной щелчок — одиночный по значку означает «выбрать».
+            -- Пустое место: под окнами лежит стол со значками. Одиночный
+            -- щелчок выделяет и берёт значок, двойной открывает.
+            notice = ""
             local moment = time.now():unix_nano()
             local repeated = last_click.x == event.x and last_click.y == event.y
                 and (moment - last_click.at) < 500000000
             last_click = {x = event.x, y = event.y, at = moment}
-            if not repeated then return end
 
-            for _, spot in ipairs(desk_hits) do
-                if event.y == spot.row and event.x >= spot.from and event.x <= spot.to then
-                    if type(spot.entry) == "string" and spot.entry ~= "" then
-                        local opened = open_window({
-                            entry = spot.entry, title = spot.title,
-                            w = spot.w, h = spot.h, args = spot.args,
-                        })
-                        if opened then raise(opened) end
-                        draw()
-                    end
-                    return
-                end
+            local spot = desktop_spot(event.x, event.y)
+            if not spot then
+                if selected_id then selected_id = nil; draw() end
+                return
             end
+
+            if spot.id then selected_id = spot.id end
+
+            if repeated then
+                if type(spot.entry) == "string" and spot.entry ~= "" then
+                    local opened = open_window({
+                        entry = spot.entry, title = spot.title,
+                        w = spot.w, h = spot.h, args = spot.args,
+                    })
+                    if opened then raise(opened) end
+                end
+                draw()
+                return
+            end
+
+            local item = spot.id and desktop_item(spot.id) or nil
+            if item then
+                local at_x = math.tointeger(tonumber(item.x) or event.x) or event.x
+                local at_y = math.tointeger(tonumber(item.y) or event.y) or event.y
+                drag = {active = true, id = spot.id, mode = "icon",
+                    dx = event.x - at_x, dy = event.y - at_y,
+                    from_x = at_x, from_y = at_y}
+            end
+            draw()
             return
         end
         raise(window)

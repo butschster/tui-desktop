@@ -141,7 +141,19 @@ function chrome.window(canvas, window, focused)
         BORDER.bottom_left .. string.rep(BORDER.horizontal, span) .. BORDER.bottom_right), w)
 
     if window.rows then
-        canvas:put_rows(x + 1, y + 1, window.rows, w - 2)
+        -- Обрезать по высоте рамки обязана тема: put_rows держит границу
+        -- холста, а не окна. Обычно лишних строк нет — viewport сделан ровно
+        -- в рамку, — но в момент смены размера приезжает кадр прежней
+        -- геометрии, и лишняя строка ложится поверх нижней грани и ниже
+        -- окна. Читается это как сломанная рамка, а не как отставший кадр.
+        local room = h - 2
+        local rows = window.rows
+        if #rows > room then
+            local cut = {}
+            for index = 1, room do cut[index] = rows[index] end
+            rows = cut
+        end
+        canvas:put_rows(x + 1, y + 1, rows, w - 2)
     end
 end
 
