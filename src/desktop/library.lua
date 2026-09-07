@@ -485,7 +485,7 @@ local function run(options: any)
 
         menu_hits = {}
         if menu then
-            local hits = chrome.menu(canvas, width, height, menu.items, menu.failure)
+            local hits = chrome.menu(canvas, width, height, menu.items, menu.failure, menu.open)
             if type(hits) == "table" then menu_hits = hits end
         end
 
@@ -622,15 +622,24 @@ local function run(options: any)
         return nil
     end
 
-    -- Кнопка под точкой заголовка. Считается по той же таблице, по которой
-    -- заголовок рисуется, — иначе кнопка «закрыть» однажды окажется на
-    -- символ левее, чем выглядит.
-    local function button_at(window, x)
-        if window.w < chrome.BUTTONS_WIDTH + 6 then return nil end
-        local from = window.x + window.w - 1 - chrome.BUTTONS_WIDTH
-        if x < from or x > from + chrome.BUTTONS_WIDTH - 1 then return nil end
-        local slot = math.floor((x - from) / 3) + 1
-        local button = chrome.BUTTONS[slot]
+    -- Кнопка под точкой заголовка. Считает тема: только она знает строку
+    -- заголовка, толщину рамки и состав кнопок — три числа, которые здесь
+    -- пришлось бы повторить. Повторение уже стоило дефекта: заголовок
+    -- переехал внутрь рамки, а проверка осталась на верхней грани, и по
+    -- кнопкам перестало попадать вовсе.
+    local function title_button_at(window, x, y)
+        if type(chrome.title_button_at) == "function" then
+            return chrome.title_button_at(window, x, y)
+        end
+        -- Запасной путь для темы, которая хит-теста не считает.
+        local step = math.tointeger(tonumber(chrome.BUTTON_STEP) or 3) or 3
+        local span = math.tointeger(tonumber(chrome.BUTTONS_WIDTH) or 9) or 9
+        if step < 1 then step = 1 end
+        if window.w < span + 6 then return nil end
+        local from = window.x + window.w - 1 - span
+        if x < from or x > from + span - 1 then return nil end
+        local slot = math.tointeger((x - from) // step) or 0
+        local button: any = chrome.BUTTONS[slot + 1]
         return button and button.id or nil
     end
 
@@ -698,6 +707,14 @@ local function run(options: any)
         if menu then
             for _, spot in ipairs(menu_hits) do
                 if event.y == spot.row and event.x >= spot.from and event.x <= spot.to then
+                    -- Папка несёт ПОЛНЫЙ путь от корня, поэтому композитору
+                    -- не надо разбирать дерево и помнить, где он находится:
+                    -- он кладёт путь и рисует снова.
+                    if type(spot.open) == "table" then
+                        menu.open = spot.open
+                        draw()
+                        return
+                    end
                     local item = menu.items[spot.index]
                     if item then
                         local window = open_window({
@@ -731,7 +748,7 @@ local function run(options: any)
                         menu = nil
                     else
                         local items, failure = catalog()
-                        menu = {items = items, failure = failure}
+                        menu = {items = items, failure = failure, open = {}}
                     end
                     draw()
                 end
@@ -782,11 +799,18 @@ local function run(options: any)
         end
         raise(window)
 
-        if event.y == window.y then
-            local button = button_at(window, event.x)
+        -- Полоса заголовка занимает весь верхний инсет: у темы с рамкой
+        -- вокруг заголовка это не одна строка.
+        if event.y < window.y + (math.tointeger(insets.top) or 1) then
+            local button = title_button_at(window, event.x, event.y)
             if button == "close" then close_window(window)
             elseif button == "minimize" then window.minimized = true
             elseif button == "maximize" then toggle_maximize(window)
+            elseif button then
+                -- Кнопка, которой композитор не знает — например «справка» у
+                -- диалога. Делать нечего, но и перетаскивание начинать
+                -- нельзя: окно уехало бы от щелчка по кнопке.
+                drag.active = false
             else
                 drag = {active = true, id = window.id, mode = "move",
                     dx = event.x - window.x, dy = event.y - window.y}
@@ -883,7 +907,7 @@ local function run(options: any)
                 top.minimized = true; draw(); return "handled"
             elseif event.key == "o" then
                 local items, failure = catalog()
-                menu = {items = items, failure = failure}
+                menu = {items = items, failure = failure, open = {}}
                 draw()
                 return "handled"
             elseif event.key_type == "tab" and #windows > 1 then
