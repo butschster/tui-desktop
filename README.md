@@ -70,17 +70,21 @@ CLI — просто подсчёт записей `terminal.host` во всём
 - `POST /tui-desktop/windows/{id}/minimize` — свернуть или развернуть: `value`
 - `POST /tui-desktop/windows/{id}/close` — закрыть
 
+Префикс пути задаёт роутер приложения, а не модуль: `/api/v1` на стенде
+kickside, `/api` в харнессе. Промах отдаёт страницу фасада с кодом 200, поэтому
+проверять стоит по `content-type`, а не по коду.
+
 ```bash
 curl -X POST -H 'Content-Type: application/json' \
   -d '{"title":"сборка","command":"/bin/bash --noprofile --norc"}' \
-  http://localhost:8099/api/tui-desktop/windows
+  http://localhost:8099/api/v1/tui-desktop/windows
 
 curl -X POST -H 'Content-Type: application/json' \
   -d '{"text":"make test","enter":true}' \
-  http://localhost:8099/api/tui-desktop/windows/w1/type
+  http://localhost:8099/api/v1/tui-desktop/windows/w1/type
 
 curl -X POST -H 'Content-Type: application/json' -d '{}' \
-  http://localhost:8099/api/tui-desktop/windows/w1/screen
+  http://localhost:8099/api/v1/tui-desktop/windows/w1/screen
 ```
 
 Команды без ответа не бывает: молчание композитора невозможно отличить от

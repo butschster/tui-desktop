@@ -14,14 +14,18 @@ description: Управлять окнами живого десктопа butsc
 
 ## Адрес и доступ
 
-Ручки живут за аутентифицированным роутером приложения — база
-`$KICKSIDE_API_URL/api/tui-desktop`, на стенде это `http://localhost:8099`.
+Ручки живут за аутентифицированным роутером приложения, и **префикс задаёт
+приложение, а не модуль**: на стенде kickside это `/api/v1`, в харнессе модуля
+— `/api`. Ошибка здесь не выглядит ошибкой: неизвестный путь отдаёт страницу
+фасада с кодом 200, то есть «ручки нет» неотличимо от «ручка ответила».
+Признак попадания — `application/json` в ответе.
+
 Токен берётся из `.env.local` приложения (`KICKSIDE_API_TOKEN`) и живёт сутки;
 `{"error":"Authentication required"}` означает истёкший срок, а не поломку.
 
 ```bash
 set -a; . ./.env.local; set +a
-API="http://localhost:8099/api/tui-desktop"
+API="http://localhost:8099/api/v1/tui-desktop"     # префикс — от приложения
 AUTH="Authorization: Bearer $KICKSIDE_API_TOKEN"
 ```
 
