@@ -332,11 +332,48 @@ local function run(options: any)
         return nil
     end
 
+    -- Окно, которому принадлежит этот процесс. Родителя диалога композитор
+    -- определяет по ОТПРАВИТЕЛЮ, а не по номеру в запросе: своего номера окно
+    -- не знает, а присланный в поле чужой номер ничем не проверить — и связь
+    -- можно было бы объявить о любом окне на столе.
+    local function window_of(from: any)
+        if from == nil then return nil end
+        local key = tostring(from)
+        for _, window in ipairs(windows) do
+            if tostring(window.pid) == key then return window end
+        end
+        return nil
+    end
+
+    -- Диалог и служебное окно живут ПРИ своём окне: закрываются вместе с ним
+    -- и держатся поверх него. Обычная программа, открытая из другого окна, —
+    -- просто программа: уходить ей следом незачем, и «Мой компьютер», открывший
+    -- просмотрщик, не должен уносить его с собой.
+    local function follows_parent(window: any)
+        local kind: any = window and window.window_type or nil
+        return kind == "dialog" or kind == "tool"
+    end
+
+    local function children_of(id)
+        local out = {}
+        for _, window in ipairs(windows) do
+            if window.opened_by == id and follows_parent(window) then
+                out[#out + 1] = window
+            end
+        end
+        return out
+    end
+
     local function raise(window)
         local index = index_of(window.id)
-        if index == 0 or index == #windows then return end
-        table.remove(windows, index)
-        windows[#windows + 1] = window
+        if index ~= 0 and index ~= #windows then
+            table.remove(windows, index)
+            windows[#windows + 1] = window
+        end
+        -- Диалог держится поверх своего окна. Уехав под него, он выглядит
+        -- пропавшим — а достать его нечем: модальности здесь нет намеренно,
+        -- ввод остальных окон не блокируется.
+        for _, child in ipairs(children_of(window.id)) do raise(child) end
     end
 
     -- Объявлено заранее: укладка считает сетку значков, а сетка известна
@@ -518,10 +555,30 @@ local function run(options: any)
         assert(out:present(canvas:rows(), {cursor = cursor}))
     end
 
-    local function open_window(spec)
+    -- open_window(spec, from) — `from` это отправитель команды. Если он
+    -- оказался одним из окон, открытое запоминает, кем открыто.
+    local function open_window(spec, from: any)
         spec = type(spec) == "table" and spec or {}
 
         local entry = type(spec.entry) == "string" and spec.entry ~= "" and spec.entry or PTY_WINDOW
+
+        local opener = window_of(from)
+
+        -- Тип нужен раньше геометрии: диалог встаёт не там, где обычное окно.
+        local record: any = registry.get(entry)
+        local window_type = programs.DEFAULT_TYPE
+        if record then
+            local declared, unknown = programs.item(record)
+            if declared then window_type = declared.window_type end
+            if unknown then
+                log:warn("неизвестный тип окна", {
+                    entry = entry, window_type = unknown, used = programs.DEFAULT_TYPE,
+                })
+            end
+        end
+        if type(spec.window_type) == "string" and programs.TYPES[spec.window_type] then
+            window_type = spec.window_type
+        end
 
         local w = clamp(spec.w or math.floor(width * 0.6), MIN_W, width)
         local h = clamp(spec.h or math.floor(desktop_height() * 0.7), MIN_H, desktop_height())
@@ -530,6 +587,19 @@ local function run(options: any)
         local step = (#windows % 6) * 2
         local x = clamp(spec.x or (2 + step), 1, math.max(1, width - w + 1))
         local y = clamp(spec.y or (desktop_top + step), desktop_top, math.max(desktop_top, height - h))
+
+        -- Диалог своего окна встаёт по его центру, а не в общий каскад: искать
+        -- глазами по всему столу окно, которое открыл сам, — работа, которой
+        -- не должно быть. Явные координаты сильнее: их назвал тот, кто просил.
+        if opener and spec.x == nil and spec.y == nil
+            and (window_type == "dialog" or window_type == "tool") then
+            local ox = math.tointeger(opener.x) or 1
+            local oy = math.tointeger(opener.y) or desktop_top
+            local ow = math.tointeger(opener.w) or w
+            local oh = math.tointeger(opener.h) or h
+            x = clamp(ox + (ow - w) // 2, 1, math.max(1, width - w + 1))
+            y = clamp(oy + (oh - h) // 2, desktop_top, math.max(desktop_top, height - h))
+        end
 
         local view, verr = tty.viewport({width = w - FRAME_W, height = h - FRAME_H})
         if not view then return nil, tostring(verr) end
@@ -548,25 +618,6 @@ local function run(options: any)
         -- подробностей открывали бы строкой «/bin/bash».
         local argument = type(spec.args) == "string" and spec.args ~= ""
             and spec.args or command
-
-        -- Тип окна объявляет ЗАПИСЬ, а не тот, кто открывает: иначе одна и та
-        -- же программа была бы диалогом из меню и обычным окном с рабочего
-        -- стола. Значение из spec принимается только известное — его кладёт
-        -- оболочка, которая уже прочитала запись своим каталогом.
-        local record: any = registry.get(entry)
-        local window_type = programs.DEFAULT_TYPE
-        if record then
-            local declared, unknown = programs.item(record)
-            if declared then window_type = declared.window_type end
-            if unknown then
-                log:warn("неизвестный тип окна", {
-                    entry = entry, window_type = unknown, used = programs.DEFAULT_TYPE,
-                })
-            end
-        end
-        if type(spec.window_type) == "string" and programs.TYPES[spec.window_type] then
-            window_type = spec.window_type
-        end
 
         -- Имя композитора едет окну в контексте процесса: под второй
         -- оболочкой десктоп зарегистрирован своим именем, и окно, знающее
@@ -587,6 +638,10 @@ local function run(options: any)
             -- Тема выбирает по нему состав кнопок заголовка; композитор
             -- только несёт его от записи до темы.
             window_type = window_type,
+            -- Кем открыто. Для диалога и служебного окна это его окно —
+            -- отсюда и общий z, и общее закрытие. Для обычной программы это
+            -- просто след: кто её запустил.
+            opened_by = opener and opener.id or nil,
             title = type(spec.title) == "string" and spec.title ~= "" and spec.title
                 or (entry == PTY_WINDOW and command or entry),
             command = command,
@@ -606,6 +661,15 @@ local function run(options: any)
     local function close_window(window)
         if window.closing then return end
         window.closing = true
+        -- Диалог без своего окна — сирота: он объявлен принадлежащим номеру,
+        -- которого больше нет, и на столе остаётся предмет, о котором никто
+        -- не помнит, откуда он.
+        --
+        -- Каскад здесь и в `forget` — не дубль: этот закрывает диалоги СРАЗУ,
+        -- а тот ловит окно, умершее само. Без здешнего диалог висел бы на
+        -- столе всё время вежливого срока — до трёх секунд после того, как
+        -- его окно попросили закрыться.
+        for _, child in ipairs(children_of(window.id)) do close_window(child) end
         if window.ready then
             window.view:send({type = "close"})
             window.deadline = time.after(CLOSE_GRACE)
@@ -618,6 +682,9 @@ local function run(options: any)
         local index = index_of(window.id)
         if index > 0 then table.remove(windows, index) end
         window.view:close()
+        -- Окно могло умереть само, не дождавшись вежливого закрытия: его
+        -- диалоги остались бы на столе привязанными к номеру, которого нет.
+        for _, child in ipairs(children_of(window.id)) do close_window(child) end
     end
 
     local function resize_window(window, w: any, h: any)
@@ -758,10 +825,12 @@ local function run(options: any)
                     end
                     local item = menu.items[spot.index]
                     if item then
+                        -- Меню, ярлык и alt+n — это сам композитор, а не
+                        -- окно: открытому здесь принадлежать некому.
                         local window = open_window({
                             entry = item.entry, title = item.title, w = item.w, h = item.h,
                             window_type = item.window_type,
-                        })
+                        }, nil)
                         if window then raise(window) end
                     end
                     menu = nil
@@ -822,7 +891,7 @@ local function run(options: any)
                         entry = spot.entry, title = spot.title,
                         w = spot.w, h = spot.h, args = spot.args,
                         window_type = spot.window_type,
-                    })
+                    }, nil)
                     if opened then raise(opened) end
                 end
                 draw()
@@ -916,7 +985,7 @@ local function run(options: any)
                 local window, err = open_window({
                     entry = item.entry, title = item.title, w = item.w, h = item.h,
                     window_type = item.window_type,
-                })
+                }, nil)
                 if window then raise(window) end
                 menu = nil
                 draw()
@@ -935,7 +1004,7 @@ local function run(options: any)
         if event.alt then
             local top = focused()
             if event.key == "n" then
-                local window, err = open_window({})
+                local window, err = open_window({}, nil)
                 if window then raise(window) end
                 if err then log:error("окно не открылось", {error = tostring(err)}) end
                 draw()
@@ -969,6 +1038,7 @@ local function run(options: any)
         return {
             id = window.id, entry = window.entry, title = window.title, command = window.command,
             window_type = window.window_type,
+            opened_by = window.opened_by,
             x = window.x, y = window.y, width = window.w, height = window.h,
             ready = window.ready, minimized = window.minimized,
             maximized = window.maximized, closing = window.closing,
@@ -980,7 +1050,7 @@ local function run(options: any)
         process.send(to, REPLY_TOPIC, body)
     end
 
-    local function handle_command(topic, body)
+    local function handle_command(topic, body, from: any)
         local to = ""
         if type(body.reply_to) == "string" then to = body.reply_to end
         local window = find(type(body.id) == "string" and body.id or "")
@@ -996,7 +1066,7 @@ local function run(options: any)
         end
 
         if topic == "desktop.open" then
-            local opened, err = open_window(body)
+            local opened, err = open_window(body, from)
             if not opened then reply({ok = false, error = err}, to); return false end
             raise(opened)
             reply({ok = true, window = describe(opened)}, to)
@@ -1143,7 +1213,9 @@ local function run(options: any)
                 local message = selected.value
                 if message then
                     local body = unwrap(message:payload())
-                    if handle_command(message:topic(), body) then draw() end
+                    -- Отправитель нужен, чтобы связать диалог с его окном:
+                    -- в теле такой связи верить нельзя.
+                    if handle_command(message:topic(), body, message:from()) then draw() end
                 end
             elseif selected.channel == lifecycle then
                 local event = selected.value

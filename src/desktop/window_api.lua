@@ -230,6 +230,32 @@ function api.open(spec)
     return call("desktop.open", spec)
 end
 
+-- open_wait(spec, opts) -> описание открытого окна | nil, причина
+--
+-- То же, что `open`, но с ответом: в описании есть `id`, а без него окно не
+-- может ни закрыть открытое, ни поднять его. Кадр на время ожидания стоит —
+-- поэтому по умолчанию `open` остаётся тем, чем был.
+function api.open_wait(spec, opts)
+    local answer, err = api.ask("desktop.open", type(spec) == "table" and spec or {}, opts)
+    if not answer then return nil, err end
+    return answer.window, nil
+end
+
+-- dialog(spec, opts) -> описание диалога | nil, причина
+--
+-- Диалог принадлежит окну, которое его открыло: композитор узнаёт родителя по
+-- отправителю, ставит диалог по центру своего окна, держит поверх него и
+-- закрывает вместе с ним. Модальности нет намеренно: блокировать ввод
+-- остальных окон там, где окно — чужой процесс, значит уметь подвесить весь
+-- стол.
+function api.dialog(spec, opts)
+    local body: any = type(spec) == "table" and spec or {}
+    body.window_type = "dialog"
+    local answer, err = api.ask("desktop.open", body, opts)
+    if not answer then return nil, err end
+    return answer.window, nil
+end
+
 function api.close(id)
     return call("desktop.close", {id = id})
 end

@@ -135,6 +135,75 @@ local function play_composer(mode)
     return body_of(result.value)
 end
 
+-- Поднять настоящий композитор на viewport теста и говорить с ним так же, как
+-- говорит командный канал снаружи. Форма реестра тут ничего не доказала бы:
+-- родство окон возникает в момент открытия, а не в объявлении.
+local function boot_composer(service)
+    local view = tty.viewport({width = 80, height = 24})
+    test.not_nil(view, "viewport не создался")
+    local grant = view:grant()
+    test.not_nil(grant, "грант на viewport не выдался")
+
+    local pid, err = process.with_options({terminal = grant})
+        :spawn_monitored("app:test_composer", "app:processes", service)
+    test.is_nil(err)
+    test.not_nil(pid, "композитор не запустился")
+
+    -- Ждём регистрации, а не спим наугад: имя появляется, когда композитор
+    -- готов принимать команды.
+    local deadline = time.now():unix_nano() + 8000000000
+    while time.now():unix_nano() < deadline do
+        if process.registry.lookup(service) then return pid end
+        channel.select({time.after("100ms"):case_receive()})
+    end
+    test.is_true(false, "композитор не зарегистрировался под именем " .. service)
+    return pid
+end
+
+-- Разговор с композитором: сообщения приходят вперемешку (ответ композитора и
+-- доклад окна), поэтому нужное берётся по топику, а остальное придерживается.
+local function mailbox(inbox: any)
+    local held = {}
+    local box: any = {}
+
+    function box.take(topic, budget)
+        for index, message in ipairs(held) do
+            if message:topic() == topic then
+                table.remove(held, index)
+                return body_of(message)
+            end
+        end
+        local expiry = time.after(budget or "8s")
+        while true do
+            local picked = channel.select({inbox:case_receive(), expiry:case_receive()})
+            if picked.channel == expiry or not picked.ok then
+                test.is_true(false, "не дождались " .. topic)
+                return {}
+            end
+            if picked.value:topic() == topic then return body_of(picked.value) end
+            held[#held + 1] = picked.value
+        end
+    end
+
+    return box
+end
+
+local function ask_desktop(service, box, topic, body: any)
+    local payload: any = type(body) == "table" and body or {}
+    payload.reply_to = tostring(process.pid())
+    local sent, serr = process.send(service, topic, payload)
+    test.is_true(sent == true, "команда не дошла до композитора: " .. tostring(serr))
+    return box.take("desktop.reply")
+end
+
+local function windows_by_id(listing: any)
+    local out: {string: any} = {}
+    for _, window in ipairs(type(listing) == "table" and listing or {}) do
+        out[tostring(window.id)] = window
+    end
+    return out
+end
+
 local function define_tests()
     test.describe("butschster.tui_desktop hosts", function()
         test.it("глушит лог на терминальном хосте", function()
@@ -351,6 +420,73 @@ local function define_tests()
             test.eq(body.answered, "да", "ответ наивный цикл получает — потому и не замечали")
             test.eq(body.eaten, "desktop.close", "команда прочитана циклом ожидания")
             test.eq(body.handled, "", "и до окна она уже не доходит")
+        end)
+    end)
+
+    test.describe("butschster.tui_desktop диалог принадлежит окну", function()
+        test.it("диалог помнит своё окно и уходит вместе с ним, а соседняя программа остаётся", function()
+            local service = "butschster.tui_desktop.test.desktop"
+            local watcher = "butschster.tui_desktop.test.watcher"
+            local inbox = process.inbox()
+            local box = mailbox(inbox)
+            process.registry.register(watcher)
+
+            local composer = boot_composer(service)
+
+            -- Окно открывает командный канал снаружи: у него родителя нет.
+            local opened = ask_desktop(service, box, "desktop.open",
+                {entry = "app:dialog_probe", args = watcher, w = 40, h = 12, x = 20, y = 6})
+            test.is_true(opened.ok == true, "окно не открылось: " .. tostring(opened.error))
+            local parent_id = tostring(opened.window.id)
+            test.is_nil(opened.window.opened_by, "открытому снаружи принадлежать некому")
+
+            -- Окно открыло из себя диалог и обычную программу.
+            local report = box.take("probe.opened")
+            test.is_nil(report.dialog_error, "диалог не открылся: " .. tostring(report.dialog_error))
+            test.is_nil(report.plain_error, "программа не открылась: " .. tostring(report.plain_error))
+
+            local listing = ask_desktop(service, box, "desktop.list", {})
+            local windows = windows_by_id(listing.windows)
+            local dialog = windows[tostring(report.dialog)]
+            local plain = windows[tostring(report.plain)]
+            test.not_nil(dialog, "диалога нет в списке")
+            test.not_nil(plain, "программы нет в списке")
+
+            -- Связь видна снаружи: тем же полем, которым её отдаёт ручка
+            -- GET /tui-desktop/windows.
+            test.eq(dialog.window_type, "dialog")
+            test.eq(dialog.opened_by, parent_id, "диалог обязан помнить своё окно")
+            test.eq(plain.window_type, "app")
+            test.eq(plain.opened_by, parent_id, "кем открыта программа — тоже факт")
+
+            -- Диалог встал по центру своего окна, а не в общий каскад.
+            local parent = windows[parent_id]
+            local pcx = parent.x + parent.width // 2
+            local dcx = dialog.x + dialog.width // 2
+            test.is_true(math.abs(dcx - pcx) <= 1,
+                "диалог должен стоять по центру своего окна: " .. tostring(dcx) .. " против " .. tostring(pcx))
+
+            -- И контроль, ради которого открывались двое: закрытие окна уносит
+            -- диалог и НЕ трогает соседнюю программу. Проверка без него
+            -- зеленела бы и у композитора, который закрывает всё подряд.
+            ask_desktop(service, box, "desktop.close", {id = parent_id})
+
+            local left: any = nil
+            local deadline = time.now():unix_nano() + 8000000000
+            while time.now():unix_nano() < deadline do
+                local again = ask_desktop(service, box, "desktop.list", {})
+                left = windows_by_id(again.windows)
+                if left[parent_id] == nil and left[tostring(report.dialog)] == nil then break end
+                channel.select({time.after("150ms"):case_receive()})
+            end
+
+            test.is_nil(left[parent_id], "окно должно было закрыться")
+            test.is_nil(left[tostring(report.dialog)], "диалог обязан уйти вместе со своим окном")
+            test.not_nil(left[tostring(report.plain)],
+                "обычная программа не принадлежит открывшему и остаётся")
+
+            process.registry.unregister(watcher)
+            process.terminate(tostring(composer))
         end)
     end)
 
