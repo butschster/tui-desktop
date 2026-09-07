@@ -60,6 +60,7 @@ end
 -- «щелчок не сработал» вместо честного отказа.
 chrome.MENU_BUTTON = {from = 60, to = 70}
 chrome.MENU_ROW = 6
+chrome.FOLDER = "Программы"
 
 -- Один кусок на заголовок каждого окна и один на панель задач — так же, как
 -- будет у настоящей: резать по строкам, чтобы набор текста в окне не
@@ -94,19 +95,36 @@ function chrome.paint(state: any, cell_w, cell_h)
     -- состояние держит механика, а тема лишь показывает.
     if state.menu then
         local items: any = state.menu.items or {}
+        local open: any = state.menu.open or {}
+        local at = math.tointeger(state.menu.cursor) or 1
         placements[#placements + 1] = {
             id = "menu", x = 2, y = chrome.MENU_ROW,
-            cols = 30, rows = math.max(1, #items),
+            cols = 30, rows = math.max(1, #items + 1),
         }
-        local at = math.tointeger(state.menu.cursor) or 1
-        for index in ipairs(items) do
+
+        if #open == 0 then
+            -- Корневая панель: сначала ПАПКА, потом программы. Папка несёт
+            -- путь целиком — композитор дерева не помнит и раскрывает то, что
+            -- ему дали.
             choices[#choices + 1] = {
-                row = chrome.MENU_ROW + index - 1, from = 2, to = 31, index = index,
-                -- Уровень и номер — по ним ходит курсор; пометка — по ней
-                -- открывают. Считать выбор дважды здесь и там значило бы
-                -- завести два мнения о том, что выбрано.
-                level = 1, slot = index, cursor = index == at,
+                row = chrome.MENU_ROW, from = 2, to = 31,
+                open = {chrome.FOLDER}, level = 1, slot = 1, cursor = at == 1,
             }
+            for index in ipairs(items) do
+                choices[#choices + 1] = {
+                    row = chrome.MENU_ROW + index, from = 2, to = 31, index = index,
+                    level = 1, slot = index + 1, cursor = at == index + 1,
+                }
+            end
+        else
+            -- Раскрытая папка — вторая панель: курсор ходит по ней, потому что
+            -- её `level` больше.
+            for index in ipairs(items) do
+                choices[#choices + 1] = {
+                    row = chrome.MENU_ROW + index - 1, from = 34, to = 63, index = index,
+                    level = 2, slot = index, cursor = at == index,
+                }
+            end
         end
     end
 

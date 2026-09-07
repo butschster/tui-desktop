@@ -914,10 +914,24 @@ local function define_tests()
             test.is_true(opened_menu.menu_open == true,
                 "попадание bars с действием обязано открывать меню")
 
-            -- ГРУППА menu: щелчок по первому пункту открывает программу из
-            -- каталога. В харнессе видна в меню ровно одна запись, поэтому
-            -- пункт известен заранее.
+            -- ГРУППА menu, папка: щелчок по строке с путём раскрывает её.
+            -- Мышью это тот же путь, что стрелкой вправо, и до сегодняшнего дня
+            -- не был проверен ни один из них.
             click(desk, 5, 6)
+            local deepened: any = nil
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                deepened = ask_desktop(service, box, "desktop.list", {})
+                if tostring(deepened.menu_path) ~= "" then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.eq(tostring(deepened.menu_path), "Программы",
+                "щелчок по папке обязан её раскрыть")
+
+            -- ГРУППА menu, программа: щелчок по пункту внутри раскрытой папки
+            -- открывает её. Пункты второй панели лежат правее — по разметке,
+            -- которую вернула тема.
+            click(desk, 40, 6)
             local after: any = nil
             deadline = time.now():unix_nano() + 8000000000
             while time.now():unix_nano() < deadline do
@@ -995,14 +1009,66 @@ local function define_tests()
             end
 
             -- Без стрелок enter открывает первую строку.
+            -- Первая строка теперь папка, поэтому до программы — одна стрелка.
             open_menu()
+            press(desk, "down")
             press(desk, "enter")
             test.eq(opened_after(0), "app:menu_second",
-                "enter без стрелок открывает строку под курсором — первую")
+                "enter открывает строку под курсором")
+
+            -- Вправо на папке раскрывает её, влево возвращает. Проверяется
+            -- ПУТЁМ, а не последствием: на стенде «вправо не сработало» и
+            -- «сработало, а подменю не нарисовалось» дают одинаковый ноль
+            -- байт, и различить их можно только этим полем.
+            open_menu()
+            local path: any = ask_desktop(service, box, "desktop.list", {})
+            test.eq(tostring(path.menu_path), "", "меню открывается на корне")
+
+            -- Сколько строк и сколько папок на уровне — тем же ответом.
+            -- «Вправо молчит» может значить «нечего раскрывать», и на стенде
+            -- это стоило часа поисков дефекта, которого не было.
+            test.eq(math.tointeger(path.menu_choices) or 0, 3,
+                "на корне папка и две программы")
+            test.eq(math.tointeger(path.menu_folders) or 0, 1,
+                "и ровно одна из них раскрывается")
+
+            press(desk, "right")
+            local deepened: any = nil
+            local deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                deepened = ask_desktop(service, box, "desktop.list", {})
+                if tostring(deepened.menu_path) ~= "" then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.eq(tostring(deepened.menu_path), "Программы",
+                "вправо на папке обязано раскрыть её")
+            test.eq(math.tointeger(deepened.menu_folders) or -1, 0,
+                "внутри папки раскрывать больше нечего — и это видно, а не молчит")
+
+            press(desk, "left")
+            local back: any = nil
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                back = ask_desktop(service, box, "desktop.list", {})
+                if tostring(back.menu_path) == "" then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.eq(tostring(back.menu_path), "", "влево обязано вернуть на уровень выше")
+
+            -- И контроль: вправо на строке-программе раскрывать нечего, путь
+            -- обязан остаться прежним. Иначе «вправо работает» означало бы
+            -- «вправо что-нибудь делает».
+            press(desk, "down")
+            press(desk, "right")
+            channel.select({time.after("400ms"):case_receive()})
+            test.eq(tostring(ask_desktop(service, box, "desktop.list", {}).menu_path), "",
+                "вправо на программе ничего не раскрывает")
+            press(desk, "esc")
 
             -- Со стрелкой вниз — вторую. Это и есть доказательство, что курсор
             -- двигается: тот же enter, другой результат.
             open_menu()
+            press(desk, "down")
             press(desk, "down")
             press(desk, "enter")
             test.eq(opened_after(1), "app:menu_target",

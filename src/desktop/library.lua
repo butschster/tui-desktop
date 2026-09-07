@@ -1525,6 +1525,50 @@ local function run(options: any)
     -- Ответ всегда называет команду, на которую отвечает. Без этого поля
     -- спрашивающий сопоставляет ответ с вопросом по одному лишь порядку — а
     -- отказ, приехавший сам (см. `refuse`), этот порядок нарушает.
+    -- Путь раскрытой папки строкой: наружу его отдаёт командный канал, а
+    -- строка читается человеком без разбора таблиц.
+    local function menu_path_text()
+        if menu == nil then return nil end
+        local open: any = menu.open
+        if type(open) ~= "table" then return "" end
+        local parts = {}
+        for _, name in ipairs(open) do parts[#parts + 1] = tostring(name) end
+        return table.concat(parts, "/")
+    end
+
+    -- Сколько строк на самом глубоком уровне и сколько из них папки.
+    -- Считается по РАЗМЕТКЕ, как и всё про меню: это то, что нарисовано.
+    -- Объявлены заранее, потому что зовёт их ответ командного канала, а
+    -- считают они по `menu_hits`, который к тому моменту уже собран.
+    local function menu_level_rows()
+        local deepest = 0
+        for _, spot in ipairs(menu_hits) do
+            local level = math.tointeger(spot.level) or 1
+            if spot.slot ~= nil and level > deepest then deepest = level end
+        end
+        local rows = {}
+        for _, spot in ipairs(menu_hits) do
+            if spot.slot ~= nil and (math.tointeger(spot.level) or 1) == deepest then
+                rows[#rows + 1] = spot
+            end
+        end
+        return rows
+    end
+
+    local function menu_choices_count()
+        if menu == nil then return nil end
+        return #menu_level_rows()
+    end
+
+    local function menu_folders_count()
+        if menu == nil then return nil end
+        local folders = 0
+        for _, spot in ipairs(menu_level_rows()) do
+            if type(spot.open) == "table" then folders = folders + 1 end
+        end
+        return folders
+    end
+
     local function reply(body: any, to, topic)
         if to == "" then return end
         body.command = topic
@@ -1582,6 +1626,16 @@ local function run(options: any)
                 -- снаружи «стрелка не сработала» иначе неотличимо от «значок
                 -- выделен, но тема этого не нарисовала».
                 selected = selected_id,
+                -- Раскрытая папка меню, путём от корня. Без неё «стрелка
+                -- вправо не сработала» и «сработала, а тема не нарисовала
+                -- подменю» выглядят одинаково — оба как ноль байт на экране.
+                menu_path = menu_path_text(),
+                -- Сколько строк на текущем уровне и сколько из них
+                -- раскрываются. Третий вид того же вопроса: «вправо молчит»
+                -- может значить «нечего раскрывать», и отличить это иначе
+                -- нельзя — пустое меню и меню без папок на экране одинаковы.
+                menu_choices = menu_choices_count(),
+                menu_folders = menu_folders_count(),
                 -- Цена последнего кадра: изменившиеся строки, отправленные
                 -- растры, байты. Мера для §8 FR-005 и единственный способ
                 -- заметить, что хром порезан неверно.
