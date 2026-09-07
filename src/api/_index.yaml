@@ -19,6 +19,8 @@ entries:
       - channel
       - process
       - time
+    imports:
+      window_api: butschster.tui_desktop.desktop:window_api
 
   # butschster.tui_desktop.api:list_windows
   - name: list_windows

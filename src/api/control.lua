@@ -13,8 +13,12 @@ local channel = require("channel")
 local process = require("process")
 local time = require("time")
 
+-- Протокол «спросить композитор» один на всех, кто спрашивает: окно, ручка и
+-- сам композитор. Топик ответа берётся оттуда, а не повторяется строкой.
+local window_api = require("window_api")
+
 local SERVICE_NAME = "butschster.tui_desktop.desktop"
-local REPLY_TOPIC = "desktop.reply"
+local REPLY_TOPIC = window_api.REPLY_TOPIC
 local BUDGET = "5s"
 
 local control = {}

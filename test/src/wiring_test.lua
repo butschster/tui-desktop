@@ -107,6 +107,34 @@ local function ask_probe(entry, service: any)
     return body_of(selected.value)
 end
 
+-- Сыграть композитора: поднять окно-заглушку, дождаться её вопроса, послать
+-- КОМАНДУ и только потом ответ. Команда до ответа — это и есть ловушка: цикл,
+-- который ждёт ответ в inbox, прочитает её первой и выбросит.
+local function play_composer(mode)
+    local inbox = process.inbox()
+    local service = "butschster.tui_desktop.test.composer"
+    process.registry.register(service)
+
+    local context: {string: any} = {}
+    context[window_api.CONTEXT_KEY] = service
+    local pid, err = process.with_options({}):with_context(context)
+        :spawn("app:ask_probe", "app:processes", mode)
+    test.is_nil(err)
+    test.not_nil(pid, "окно не запустилось")
+
+    local question = channel.select({inbox:case_receive(), time.after("5s"):case_receive()})
+    test.is_true(question.channel == inbox, "окно не задало вопроса")
+    test.eq(question.value:topic(), "desktop.list")
+
+    process.send(tostring(pid), "desktop.close", {id = "w1"})
+    process.send(tostring(pid), window_api.REPLY_TOPIC, {ok = true, marker = "готово"})
+
+    local result = channel.select({inbox:case_receive(), time.after("8s"):case_receive()})
+    test.is_true(result.channel == inbox, "окно не отчиталось")
+    process.registry.unregister(service)
+    return body_of(result.value)
+end
+
 local function define_tests()
     test.describe("butschster.tui_desktop hosts", function()
         test.it("глушит лог на терминальном хосте", function()
@@ -299,6 +327,30 @@ local function define_tests()
             local api = data_of(get(WINDOW_API_ID))
             test.is_true(has(api.modules or {}, "ctx"),
                 "без модуля ctx имя композитора прочитать нечем")
+        end)
+    end)
+
+    test.describe("butschster.tui_desktop ожидание ответа в окне", function()
+        test.it("окно дожидается ответа, не потеряв команду композитора", function()
+            -- Команда послана, пока окно ждало. Рантайм её не теряет: она
+            -- ждёт в очереди процесса, пока окно не вернётся к своему циклу.
+            -- Проверяется именно это, а не «ответ пришёл»: проверка на один
+            -- ответ зеленеет и при потере команды.
+            local body = play_composer("ask")
+            test.eq(body.answered, "готово", "ответ должен дойти целиком")
+            test.eq(body.handled, "desktop.close",
+                "команда, посланная во время ожидания, обязана дождаться цикла окна")
+        end)
+
+        test.it("наивное ожидание в inbox команду съедает — и проверка это видит", function()
+            -- Тот же сценарий тем циклом, который здесь чинится. Тест держится
+            -- не на словах: если однажды `ask` вернётся к чтению inbox,
+            -- проверка выше покраснеет ровно так же, как краснеет здесь
+            -- ожидание «команда дошла».
+            local body = play_composer("naive")
+            test.eq(body.answered, "да", "ответ наивный цикл получает — потому и не замечали")
+            test.eq(body.eaten, "desktop.close", "команда прочитана циклом ожидания")
+            test.eq(body.handled, "", "и до окна она уже не доходит")
         end)
     end)
 

@@ -59,6 +59,18 @@ entries:
     imports:
       desktop: butschster.tui_desktop.desktop:window_api
 
+  # Окно, которое спрашивает композитор. Режим приезжает аргументом: «naive» —
+  # цикл, съедающий чужое из inbox, «ask» — примитив ожидания из библиотеки.
+  - name: ask_probe
+    kind: process.lua
+    meta:
+      comment: Окно-заглушка, задающая композитору вопрос; проверяет, переживает ли ожидание чужую команду.
+    source: file://ask_probe.lua
+    method: main
+    modules: [process, channel, time]
+    imports:
+      desktop: butschster.tui_desktop.desktop:window_api
+
   - name: window_probe_bare
     kind: process.lua
     meta:

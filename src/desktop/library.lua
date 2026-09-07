@@ -50,7 +50,11 @@ local PTY_WINDOW = "butschster.tui_desktop.desktop:window_pty"
 -- Каталог окон приложения: записи, помеченные этим meta.type, композитор
 -- находит сам и показывает в меню по alt+o.
 local WINDOW_META_TYPE = programs.WINDOW_META_TYPE
-local REPLY_TOPIC = "desktop.reply"
+
+-- Топик ответа берётся у протокола окна, а не повторяется строкой: на нём
+-- держится подписка окна, и разойдись они — ответ уехал бы окну в inbox, где
+-- его съел бы чужой цикл.
+local REPLY_TOPIC = window_api.REPLY_TOPIC
 
 local DEFAULT_COMMAND = "/bin/bash --noprofile --norc"
 local CLOSE_GRACE = "3s"

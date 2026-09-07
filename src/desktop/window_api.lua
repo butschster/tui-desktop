@@ -10,6 +10,8 @@
 -- бы слать команды, которых композитор уже не понимает.
 
 local process = require("process")
+local channel = require("channel")
+local time = require("time")
 
 -- Лог здесь не роскошь: `open` ответа не ждёт намеренно, и окно, которое не
 -- проверило второе возвращаемое значение, иначе не расскажет об отказе никак.
@@ -36,6 +38,14 @@ local api = {}
 
 api.CONTEXT_KEY = CONTEXT_KEY
 api.DEFAULT_SERVICE = DEFAULT_SERVICE
+
+-- Топик, на котором композитор отвечает. Одна константа на обе стороны:
+-- механика берёт её отсюда же.
+api.REPLY_TOPIC = "desktop.reply"
+
+-- Сколько ждать ответа. Ожидание обязано кончаться: окно, которое ждёт вечно,
+-- не рисуется и не принимает ввод, и снаружи это «зависло», а не «ждёт».
+api.BUDGET = "5s"
 
 -- service() -> имя композитора, откуда оно взято ("context" | "default")
 --
@@ -78,6 +88,136 @@ local function call(topic, body)
         return nil, "команда не дошла до «" .. name .. "»: " .. tostring(serr)
     end
     return true, nil
+end
+
+-- Ответ приезжает обёрнутым: payload — userdata, внутри бывает ещё и массив
+-- из одного элемента. Поле, прочитанное напрямую, окажется nil без ошибки.
+local function unwrap(value)
+    if type(value) == "userdata" then
+        local ok, decoded = pcall(function() return value:data() end)
+        if ok and type(decoded) == "table" then return decoded end
+        return {}
+    end
+    if type(value) ~= "table" then return {} end
+    if value[1] ~= nil and #value > 0 then return unwrap(value[1]) end
+    return value
+end
+
+-- Канал ответов. Отдельная подписка на топик, а НЕ чтение общего inbox, и это
+-- главное решение здесь.
+--
+-- Цикл, который ждёт ответ в inbox, забирает оттуда всё подряд и выбрасывает
+-- чужое — измерено: команда `desktop.close`, посланная окну, пока оно ждало,
+-- исчезала без следа, и снаружи это выглядело как окно, переставшее слушаться
+-- мышь. Рантайм при этом ничего не терял сам: сообщение, которому некому
+-- отдаться, ждёт в очереди процесса. Значит достаточно не забирать его —
+-- ответ приходит своим каналом, чужая команда остаётся в inbox и дожидается
+-- цикла окна.
+local replies: any = nil
+
+local function reply_channel()
+    if replies then return replies, nil end
+    -- Подписка создаётся ДО отправки вопроса: созданная после, она пропустила
+    -- бы быстрый ответ в inbox, где его съел бы чужой цикл.
+    local opened = process.listen(api.REPLY_TOPIC, {message = true})
+    if not opened then return nil, "окно не смогло подписаться на ответы десктопа" end
+    replies = opened
+    return replies, nil
+end
+
+-- replies() -> канал ответов десктопа
+--
+-- Для окна со своим циклом это лучше, чем `ask`: оно кладёт канал в свой
+-- `channel.select` рядом с событиями и inbox и не перестаёт рисоваться,
+-- пока ждёт. `ask` удобнее, но на время ожидания окно не читает ни ввод, ни
+-- команды — они дождутся его (проверено), но кадр в это время стоит.
+function api.replies()
+    local opened, err = reply_channel()
+    return opened, err
+end
+
+-- Ответ, оставшийся от вопроса, который не дождались. Выбрасывается перед
+-- новым вопросом: его никто не ждёт, а прочитанный как свежий он ответил бы на
+-- прошлый вопрос вместо нынешнего. Выбросить ответ безопасно — в отличие от
+-- команды, ради которой всё это и сделано.
+local function drop_stale(ch)
+    local dropped = 0
+    while true do
+        local picked = channel.select({ch:case_receive()}, true)
+        if picked.default or not picked.ok then break end
+        dropped = dropped + 1
+    end
+    return dropped
+end
+
+-- request(topic, body) -> true | nil, причина
+--
+-- Задать вопрос и не ждать: ответ приедет в `api.replies()`. Ровно это нужно
+-- окну, которое рисует себя и не имеет права замирать.
+function api.request(topic, body)
+    local name, source = api.service()
+    local pid, lerr = process.registry.lookup(name)
+    if not pid then
+        local reason = unreachable(name, source, lerr)
+        log:error("окно не нашло свой десктоп",
+            {service = name, source = source, topic = topic, error = reason})
+        return nil, reason
+    end
+
+    local ch, cerr = reply_channel()
+    if not ch then return nil, tostring(cerr) end
+
+    body = type(body) == "table" and body or {}
+    body.reply_to = tostring(process.pid())
+
+    local sent, serr = process.send(pid, topic, body)
+    if not sent then
+        return nil, "вопрос не дошёл до «" .. name .. "»: " .. tostring(serr)
+    end
+    return true, nil
+end
+
+-- ask(topic, body, opts) -> ответ | nil, причина
+--
+-- opts.timeout — срок ожидания (по умолчанию api.BUDGET).
+function api.ask(topic, body, opts)
+    local options: any = type(opts) == "table" and opts or {}
+    local budget = type(options.timeout) == "string" and options.timeout ~= ""
+        and options.timeout or api.BUDGET
+
+    local ch, cerr = reply_channel()
+    if not ch then return nil, tostring(cerr) end
+
+    local stale = drop_stale(ch)
+    if stale > 0 then
+        log:warn("выброшен ответ, которого уже никто не ждал",
+            {topic = topic, dropped = stale})
+    end
+
+    local ok, rerr = api.request(topic, body)
+    if not ok then return nil, rerr end
+
+    local expiry = time.after(budget)
+    local picked = channel.select({ch:case_receive(), expiry:case_receive()})
+    if picked.channel == expiry then
+        local name = api.service()
+        return nil, "десктоп «" .. name .. "» не ответил за " .. budget
+    end
+    if not picked.ok then
+        return nil, "канал ответов закрылся, пока ждали десктоп"
+    end
+
+    local answer = unwrap(picked.value:payload())
+    if answer.ok == false then
+        return nil, tostring(answer.error or "десктоп отказал без причины")
+    end
+    return answer, nil
+end
+
+-- list(opts) -> {windows, focused, screen, restore} | nil, причина
+function api.list(opts)
+    local answer, err = api.ask("desktop.list", {}, opts)
+    return answer, err
 end
 
 -- open{entry=…, title=…, args=…, x=…, y=…, w=…, h=…}
