@@ -653,7 +653,8 @@ local function run(options: any)
                 top = desktop_top, bottom = desktop_last,
                 windows = windows, focused_id = focused_id,
                 items = desk.items, failure = desk.failure, selected = selected_id,
-                menu = menu and {items = menu.items, failure = menu.failure, open = menu.open} or nil,
+                menu = menu and {items = menu.items, failure = menu.failure,
+                    open = menu.open, cursor = menu.cursor} or nil,
                 status = status, clock = clock, hint = HINT,
             }, cell_w, cell_h)
 
@@ -688,7 +689,12 @@ local function run(options: any)
 
             menu_hits = {}
             if menu then
-                local hits = chrome.menu(canvas, width, height, menu.items, menu.failure, menu.open)
+                -- Курсор отдаётся теме, а не считается ею: она помечает
+                -- выбранную строку в разметке, и та же разметка возвращается
+                -- сюда. Так «что выбрано» существует в одном месте — в том,
+                -- что нарисовано.
+                local hits = chrome.menu(canvas, width, height, menu.items, menu.failure,
+                    menu.open, menu.cursor)
                 if type(hits) == "table" then menu_hits = hits end
             end
         end
@@ -1124,7 +1130,7 @@ local function run(options: any)
                         menu = nil
                     else
                         local items, failure = catalog()
-                        menu = {items = items, failure = failure, open = {}}
+                        menu = {items = items, failure = failure, open = {}, cursor = 1}
                     end
                     draw()
                 end
@@ -1237,6 +1243,157 @@ local function run(options: any)
         return items, nil
     end
 
+    -- ─── стрелки по меню ─────────────────────────────────────────────────
+    --
+    -- Курсор ходит по РАЗМЕТКЕ, а не по каталогу: выбирается то, что
+    -- нарисовано. Считать выбор заново значило бы завести второе
+    -- представление о том, где строки, и однажды курсор поехал бы по строкам,
+    -- которых на экране нет.
+
+    -- Строки самой глубокой раскрытой панели — те, между которыми ходит
+    -- курсор. Панель левее раскрыта, но выбор идёт в той, что открыли
+    -- последней.
+    local function menu_rows()
+        local deepest = 0
+        for _, spot in ipairs(menu_hits) do
+            local level = math.tointeger(spot.level) or 1
+            if spot.slot ~= nil and level > deepest then deepest = level end
+        end
+        local rows = {}
+        for _, spot in ipairs(menu_hits) do
+            if spot.slot ~= nil and (math.tointeger(spot.level) or 1) == deepest then
+                rows[#rows + 1] = spot
+            end
+        end
+        table.sort(rows, function(left, right)
+            return (math.tointeger(left.slot) or 0) < (math.tointeger(right.slot) or 0)
+        end)
+        return rows
+    end
+
+    -- Строка под курсором. Сначала та, которую тема ПОМЕТИЛА, и только потом
+    -- та, чей номер совпал: пометка — единственное, что связывает наш номер с
+    -- нарисованным.
+    local function menu_cursor_spot()
+        local rows = menu_rows()
+        for _, spot in ipairs(rows) do
+            if spot.cursor == true then return spot end
+        end
+        local wanted = math.tointeger(menu.cursor) or 1
+        for _, spot in ipairs(rows) do
+            if (math.tointeger(spot.slot) or 0) == wanted then return spot end
+        end
+        return nil
+    end
+
+    local function move_menu_cursor(step)
+        local rows = menu_rows()
+        if #rows == 0 then return false end
+        local wanted = math.tointeger(menu.cursor) or 1
+        local at = 0
+        for index, spot in ipairs(rows) do
+            if (math.tointeger(spot.slot) or 0) == wanted then at = index end
+        end
+        if at == 0 then at = step > 0 and 0 or 1 end
+        local next_at = at + step
+        if next_at < 1 then next_at = #rows end
+        if next_at > #rows then next_at = 1 end
+        menu.cursor = math.tointeger(rows[next_at].slot) or 1
+        return true
+    end
+
+    local function open_menu_item(spot: any)
+        local item: any = menu.items[math.tointeger(spot.index) or 0]
+        if not item then return false end
+        local window = open_window({
+            entry = item.entry, title = item.title, w = item.w, h = item.h,
+            window_type = item.window_type,
+        }, nil)
+        if window then raise(window) end
+        return true
+    end
+
+    -- ─── стрелки по столу ────────────────────────────────────────────────
+
+    -- Значки по разметке: у значка с подписью попаданий несколько (строка
+    -- рисунка и строки подписи), а значок один — поэтому они сводятся по id, и
+    -- за место берётся самая верхняя строка.
+    local function icon_spots()
+        local seen: any = {}
+        local spots = {}
+        for _, hit in ipairs(desk_hits) do
+            local id = hit.id
+            if type(id) == "string" and id ~= "" then
+                local row = math.tointeger(hit.row) or 0
+                local col = math.tointeger(hit.from) or 0
+                local at = seen[id]
+                if at == nil then
+                    spots[#spots + 1] = {id = id, row = row, col = col, hit = hit}
+                    seen[id] = #spots
+                else
+                    local kept: any = spots[at]
+                    if row < kept.row then kept.row = row end
+                end
+            end
+        end
+        return spots
+    end
+
+    local function move_selection(dx, dy)
+        local spots = icon_spots()
+        if #spots == 0 then return false end
+
+        local current: any = nil
+        for _, spot in ipairs(spots) do
+            if spot.id == selected_id then current = spot end
+        end
+        -- Ничего не выделено — первая стрелка выделяет, а не двигает.
+        if current == nil then
+            selected_id = spots[1].id
+            return true
+        end
+
+        local best: any = nil
+        local best_score = 0
+        for _, spot in ipairs(spots) do
+            if spot.id ~= current.id then
+                local drow = spot.row - current.row
+                local dcol = spot.col - current.col
+                local forward = false
+                local score = 0
+                if dy ~= 0 and drow * dy > 0 then
+                    forward = true
+                    score = math.abs(drow) * 1000 + math.abs(dcol)
+                elseif dx ~= 0 and dcol * dx > 0 and drow == 0 then
+                    forward = true
+                    score = math.abs(dcol) * 1000 + math.abs(drow)
+                end
+                if forward and (best == nil or score < best_score) then
+                    best, best_score = spot, score
+                end
+            end
+        end
+
+        if best == nil then return false end
+        selected_id = best.id
+        return true
+    end
+
+    local function open_selected_icon()
+        for _, hit in ipairs(desk_hits) do
+            if hit.id == selected_id and type(hit.entry) == "string" and hit.entry ~= "" then
+                local opened = open_window({
+                    entry = hit.entry, title = hit.title,
+                    w = hit.w, h = hit.h, args = hit.args,
+                    window_type = hit.window_type,
+                }, nil)
+                if opened then raise(opened) end
+                return true
+            end
+        end
+        return false
+    end
+
     local function handle_key(event)
         if menu then
             if event.key_type == "esc" or (event.ctrl and event.key == "q") then
@@ -1244,17 +1401,48 @@ local function run(options: any)
                 draw()
                 return "handled"
             end
-            local choice = type(event.key) == "string" and tonumber(event.key) or nil
-            local item = choice and menu.items[choice] or nil
-            if item then
-                local window, err = open_window({
-                    entry = item.entry, title = item.title, w = item.w, h = item.h,
-                    window_type = item.window_type,
-                }, nil)
-                if window then raise(window) end
-                menu = nil
-                draw()
+
+            if event.key_type == "up" then
+                if move_menu_cursor(-1) then draw() end
+            elseif event.key_type == "down" then
+                if move_menu_cursor(1) then draw() end
+            elseif event.key_type == "right" then
+                -- Папка раскрывается вправо: путь кладётся целиком, как и при
+                -- щелчке, — композитор дерева не помнит.
+                local spot = menu_cursor_spot()
+                if spot and type(spot.open) == "table" then
+                    menu.open = spot.open
+                    menu.cursor = 1
+                    draw()
+                end
+            elseif event.key_type == "left" then
+                local open: any = menu.open
+                if type(open) == "table" and #open > 0 then
+                    local shorter = {}
+                    for index = 1, #open - 1 do shorter[index] = open[index] end
+                    menu.open = shorter
+                    menu.cursor = 1
+                    draw()
+                end
+            elseif event.key_type == "enter" then
+                local spot = menu_cursor_spot()
+                if spot == nil then
+                    -- Тема не пометила выбранную строку: enter молчал бы, а
+                    -- молчащая клавиша неотличима от сломанного меню.
+                    notice = "тема не отметила выбранную строку меню"
+                    draw()
+                elseif type(spot.open) == "table" then
+                    menu.open = spot.open
+                    menu.cursor = 1
+                    draw()
+                else
+                    if open_menu_item(spot) then menu = nil end
+                    draw()
+                end
             end
+
+            -- Открытое меню забирает ввод целиком: иначе клавиша уехала бы в
+            -- окно под ним.
             return "handled"
         end
 
@@ -1264,6 +1452,28 @@ local function run(options: any)
             if #windows == 0 then return "quit" end
             draw()
             return "handled"
+        end
+
+        -- Стрелки принадлежат столу только тогда, когда ни одно окно не в
+        -- фокусе. Иначе стол крал бы их у редактора внутри окна — а это ровно
+        -- та кража клавиш, из-за которой акселераторы здесь держатся на alt.
+        if focused() == nil then
+            if event.key_type == "up" then
+                if move_selection(0, -1) then draw() end
+                return "handled"
+            elseif event.key_type == "down" then
+                if move_selection(0, 1) then draw() end
+                return "handled"
+            elseif event.key_type == "left" then
+                if move_selection(-1, 0) then draw() end
+                return "handled"
+            elseif event.key_type == "right" then
+                if move_selection(1, 0) then draw() end
+                return "handled"
+            elseif event.key_type == "enter" and selected_id then
+                if open_selected_icon() then draw() end
+                return "handled"
+            end
         end
 
         if event.alt then
@@ -1280,17 +1490,13 @@ local function run(options: any)
                 top.minimized = true; draw(); return "handled"
             elseif event.key == "o" then
                 local items, failure = catalog()
-                menu = {items = items, failure = failure, open = {}}
+                menu = {items = items, failure = failure, open = {}, cursor = 1}
                 draw()
                 return "handled"
             elseif event.key_type == "tab" and #windows > 1 then
                 local bottom = windows[1]
                 bottom.minimized = false
                 raise(bottom); draw(); return "handled"
-            elseif event.key and event.key:match("^[1-9]$") then
-                local window = windows[tonumber(event.key)]
-                if window then window.minimized = false; raise(window); draw() end
-                return "handled"
             end
         end
 
@@ -1372,6 +1578,10 @@ local function run(options: any)
                 -- «щелчок по кнопке меню не дошёл» от «дошёл, а нарисовать
                 -- меню не смогли»: на экране оба выглядят одинаково.
                 menu_open = menu ~= nil,
+                -- Выделенный значок стола: стрелки двигают именно его, и
+                -- снаружи «стрелка не сработала» иначе неотличимо от «значок
+                -- выделен, но тема этого не нарисовала».
+                selected = selected_id,
                 -- Цена последнего кадра: изменившиеся строки, отправленные
                 -- растры, байты. Мера для §8 FR-005 и единственный способ
                 -- заметить, что хром порезан неверно.

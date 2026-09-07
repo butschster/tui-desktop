@@ -214,6 +214,16 @@ entries:
     method: main
     modules: [channel, time]
 
+  - name: menu_second
+    kind: process.lua
+    meta:
+      type: tui_desktop.window
+      title: Вторая мишень
+      comment: Второй пункт меню — без него стрелке в меню некуда двигаться.
+    source: file://idle_window.lua
+    method: main
+    modules: [channel, time]
+
   - name: dialog_probe
     kind: process.lua
     meta:

@@ -20,11 +20,23 @@ local function main(args)
     local parts = split(args)
     local service, watcher, kind = parts[1], parts[2], parts[3] or "ok"
 
+    -- Раскладка стола: четыре значка сеткой два на два, координаты названы
+    -- явно — по ним же считает проверка, куда должна уехать стрелка.
+    local function desktop_items()
+        return {
+            {id = "i1", title = "Первый", entry = "app:menu_target", x = 2, y = 4, w = 20, h = 6},
+            {id = "i2", title = "Второй", entry = "app:menu_target", x = 14, y = 4, w = 20, h = 6},
+            {id = "i3", title = "Третий", entry = "app:menu_target", x = 2, y = 8, w = 20, h = 6},
+            {id = "i4", title = "Четвёртый", entry = "app:menu_target", x = 14, y = 8, w = 20, h = 6},
+        }, nil
+    end
+
     local options: any = {
         chrome = pixel_chrome,
         service_name = service,
         pixels = true,
         restore = false,
+        desktop_items = desktop_items,
     }
 
     if kind == "ok" then

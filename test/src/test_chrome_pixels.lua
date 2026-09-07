@@ -36,7 +36,23 @@ function chrome.fill(canvas: any, width, height, state: any)
     for line = math.tointeger(state.top) or 1, math.tointeger(state.bottom) or 1 do
         canvas:put(1, line, row, width)
     end
-    return {}
+
+    -- Значок даёт ДВЕ строки попаданий — рисунок и подпись, как у настоящей
+    -- темы. Композитор обязан свести их в один значок: иначе стрелка вниз
+    -- уходила бы с рисунка на его же подпись.
+    local hits = {}
+    for _, item in ipairs(state.items or {}) do
+        local x = math.tointeger(item.x) or 1
+        local y = math.tointeger(item.y) or 1
+        for line = 0, 1 do
+            hits[#hits + 1] = {
+                row = y + line, from = x, to = x + 9,
+                id = item.id, entry = item.entry, title = item.title,
+                w = item.w, h = item.h, args = item.args,
+            }
+        end
+    end
+    return hits
 end
 
 -- Кнопка «Пуск» на панели задач и строка, с которой начинается меню. Числа
@@ -82,9 +98,14 @@ function chrome.paint(state: any, cell_w, cell_h)
             id = "menu", x = 2, y = chrome.MENU_ROW,
             cols = 30, rows = math.max(1, #items),
         }
+        local at = math.tointeger(state.menu.cursor) or 1
         for index in ipairs(items) do
             choices[#choices + 1] = {
                 row = chrome.MENU_ROW + index - 1, from = 2, to = 31, index = index,
+                -- Уровень и номер — по ним ходит курсор; пометка — по ней
+                -- открывают. Считать выбор дважды здесь и там значило бы
+                -- завести два мнения о том, что выбрано.
+                level = 1, slot = index, cursor = index == at,
             }
         end
     end

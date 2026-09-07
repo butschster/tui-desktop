@@ -275,6 +275,21 @@ local function mailbox(inbox: any)
     return box
 end
 
+-- Нажать клавишу — тем же путём, каким приходит настоящая: событием в экран
+-- композитора. Клавиатурных путей, не видных в интерфейсе, здесь не заводят,
+-- поэтому проверки жмут ровно то, что человек видит нарисованным.
+local function press(desk: any, key_type)
+    local sent = desk.view:send({type = "key", key = key_type,
+        key_type = key_type, action = "press"})
+    test.is_true(sent == true, "клавиша не доехала до экрана композитора")
+end
+
+local function press_alt(desk: any, key)
+    local sent = desk.view:send({type = "key", key = key, key_type = "runes",
+        action = "press", alt = true})
+    test.is_true(sent == true, "клавиша не доехала до экрана композитора")
+end
+
 -- Команда БЕЗ обратного адреса — так их шлёт окно: ответа оно не ждёт.
 -- Отказ на такую команду и был молчанием, ради которого сделана строка
 -- состояния.
@@ -911,8 +926,8 @@ local function define_tests()
                 channel.select({time.after("100ms"):case_receive()})
             end
             test.eq(#after.windows, 3, "попадание menu обязано открывать программу")
-            test.eq(tostring(after.windows[#after.windows].entry), "app:menu_target",
-                "и именно ту, по которой щёлкнули")
+            test.eq(tostring(after.windows[#after.windows].entry), "app:menu_second",
+                "и именно ту, по которой щёлкнули: первую строку каталога")
             test.is_true(after.menu_open == false, "выбранный пункт закрывает меню")
 
             -- Контроль: щелчок мимо всякой разметки не открывает ничего и не
@@ -937,6 +952,124 @@ local function define_tests()
             end
             test.is_true(closed.menu_open == false, "щелчок мимо меню закрывает его")
             test.eq(#closed.windows, 3, "и ничего не открывает")
+
+            process.registry.unregister(watcher)
+            process.terminate(tostring(desk.pid))
+        end)
+
+        test.it("стрелки водят курсор по меню, а enter открывает помеченное", function()
+            -- Цифровых сокращений в меню больше нет: клавиатурный путь, не
+            -- видный в интерфейсе, заводить нельзя. Значит стрелки обязаны
+            -- работать — и работать по РАЗМЕТКЕ, а не по каталогу.
+            local service = "butschster.tui_desktop.test.pixels.keys"
+            local watcher = "butschster.tui_desktop.test.pixels.keys.watcher"
+            local box = mailbox(process.inbox())
+            process.registry.register(watcher)
+            local desk = boot_pixel_composer(service, watcher, "ok")
+
+            -- Каталог харнесса виден в меню двумя записями, по заголовкам:
+            -- «Вторая мишень», потом «Мишень меню».
+            local function open_menu()
+                click(desk, 62, 24)
+                local shown: any = nil
+                local deadline = time.now():unix_nano() + 5000000000
+                while time.now():unix_nano() < deadline do
+                    shown = ask_desktop(service, box, "desktop.list", {})
+                    if shown.menu_open == true then break end
+                    channel.select({time.after("100ms"):case_receive()})
+                end
+                test.is_true(shown.menu_open == true, "меню обязано открыться")
+                return shown
+            end
+
+            local function opened_after(before)
+                local grown: any = nil
+                local deadline = time.now():unix_nano() + 8000000000
+                while time.now():unix_nano() < deadline do
+                    grown = ask_desktop(service, box, "desktop.list", {})
+                    if #grown.windows > before then break end
+                    channel.select({time.after("100ms"):case_receive()})
+                end
+                test.is_true(#grown.windows > before, "программа не открылась")
+                return tostring(grown.windows[#grown.windows].entry)
+            end
+
+            -- Без стрелок enter открывает первую строку.
+            open_menu()
+            press(desk, "enter")
+            test.eq(opened_after(0), "app:menu_second",
+                "enter без стрелок открывает строку под курсором — первую")
+
+            -- Со стрелкой вниз — вторую. Это и есть доказательство, что курсор
+            -- двигается: тот же enter, другой результат.
+            open_menu()
+            press(desk, "down")
+            press(desk, "enter")
+            test.eq(opened_after(1), "app:menu_target",
+                "стрелка вниз обязана двигать курсор на следующую строку")
+
+            process.registry.unregister(watcher)
+            process.terminate(tostring(desk.pid))
+        end)
+
+        test.it("стрелки водят выделение по значкам стола, а enter открывает", function()
+            -- Значки лежат сеткой два на два; у каждого ДВЕ строки попаданий,
+            -- как у настоящей темы с подписью. Стрелка вниз обязана уйти на
+            -- соседний значок, а не на подпись того же.
+            local service = "butschster.tui_desktop.test.pixels.icons"
+            local watcher = "butschster.tui_desktop.test.pixels.icons.watcher"
+            local box = mailbox(process.inbox())
+            process.registry.register(watcher)
+            local desk = boot_pixel_composer(service, watcher, "ok")
+
+            local function selection()
+                return tostring(ask_desktop(service, box, "desktop.list", {}).selected)
+            end
+
+            local function press_until(key_type, wanted)
+                press(desk, key_type)
+                local at = "nil"
+                local deadline = time.now():unix_nano() + 5000000000
+                while time.now():unix_nano() < deadline do
+                    at = selection()
+                    if at == wanted then break end
+                    channel.select({time.after("100ms"):case_receive()})
+                end
+                return at
+            end
+
+            -- Первая стрелка выделяет, а не двигает: выделять нечего.
+            test.eq(press_until("right", "i1"), "i1", "первая стрелка обязана выделить первый значок")
+            test.eq(press_until("right", "i2"), "i2", "вправо — соседний значок в строке")
+            test.eq(press_until("down", "i4"), "i4", "вниз — значок строкой ниже, а не своя же подпись")
+            test.eq(press_until("left", "i3"), "i3", "влево — соседний слева")
+
+            -- Контроль: у края двигаться некуда, и выделение обязано остаться.
+            -- Без него «стрелки работают» означало бы «выделение куда-нибудь
+            -- прыгает».
+            press(desk, "left")
+            channel.select({time.after("400ms"):case_receive()})
+            test.eq(selection(), "i3", "у края сетки выделение не уезжает")
+
+            -- Enter открывает выделенный значок.
+            press(desk, "enter")
+            local grown: any = nil
+            local deadline = time.now():unix_nano() + 8000000000
+            while time.now():unix_nano() < deadline do
+                grown = ask_desktop(service, box, "desktop.list", {})
+                if #grown.windows > 0 then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.eq(#grown.windows, 1, "enter обязан открыть выделенный значок")
+            test.eq(tostring(grown.windows[1].entry), "app:menu_target")
+
+            -- И теперь, когда окно в фокусе, стрелки принадлежат ЕМУ: стол
+            -- больше их не берёт, иначе редактор внутри окна лишился бы
+            -- стрелок.
+            local before = selection()
+            press(desk, "up")
+            channel.select({time.after("400ms"):case_receive()})
+            test.eq(selection(), before, "при окне в фокусе стол стрелки не берёт")
 
             process.registry.unregister(watcher)
             process.terminate(tostring(desk.pid))
@@ -1219,6 +1352,56 @@ local function define_tests()
             test.eq(#grouped.bars, 1)
             test.eq(#grouped.desktop, 0)
             test.eq(#grouped.menu, 0)
+        end)
+    end)
+
+    test.describe("butschster.tui_desktop стрелки в режиме символов", function()
+        test.it("курсор меню доезжает до темы и в ячейках, а не только в пикселях", function()
+            -- Режим, который не проверили, — тот, в котором стрелки двигают
+            -- НЕВИДИМОЕ: человек нажимает, что-то меняется, и он не видит где.
+            -- Поэтому тот же путь проверяется у штатной темы, где курсор
+            -- приезжает седьмым аргументом chrome.menu.
+            local service = "butschster.tui_desktop.test.keys.cells"
+            local box = mailbox(process.inbox())
+            local desk = boot_composer(service)
+
+            local function open_menu()
+                press_alt(desk, "o")
+                local shown: any = nil
+                local deadline = time.now():unix_nano() + 5000000000
+                while time.now():unix_nano() < deadline do
+                    shown = ask_desktop(service, box, "desktop.list", {})
+                    if shown.menu_open == true then break end
+                    channel.select({time.after("100ms"):case_receive()})
+                end
+                test.is_true(shown.menu_open == true, "alt+o обязан открыть меню")
+            end
+
+            local function opened_after(before)
+                local grown: any = nil
+                local deadline = time.now():unix_nano() + 8000000000
+                while time.now():unix_nano() < deadline do
+                    grown = ask_desktop(service, box, "desktop.list", {})
+                    if #grown.windows > before then break end
+                    channel.select({time.after("100ms"):case_receive()})
+                end
+                test.is_true(#grown.windows > before, "программа не открылась")
+                return tostring(grown.windows[#grown.windows].entry)
+            end
+
+            open_menu()
+            press(desk, "enter")
+            test.eq(opened_after(0), "app:menu_second", "enter открывает строку под курсором")
+
+            open_menu()
+            press(desk, "down")
+            press(desk, "enter")
+            -- Если курсор до темы не доехал, она пометит первую строку, и
+            -- откроется снова первая — тем же enter, при той же стрелке.
+            test.eq(opened_after(1), "app:menu_target",
+                "курсор обязан доехать до темы: иначе стрелка двигает невидимое")
+
+            process.terminate(tostring(desk.pid))
         end)
     end)
 

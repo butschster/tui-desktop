@@ -190,7 +190,13 @@ end
 
 -- Меню приложений: список окон, которые объявило приложение. Пустой список
 -- говорит об этом прямо — молчаливое пустое меню читается как поломка.
-function chrome.menu(canvas, width: any, height: any, items, failure)
+-- Меню штатной темы: один уровень, без папок.
+--
+-- `cursor` — номер выбранной строки; тема ПОМЕЧАЕТ её в разметке (`cursor =
+-- true`), и композитор потом открывает помеченную, а не считает выбор заново.
+-- Цифр в строках нет намеренно: клавиатурный путь, не видный в интерфейсе,
+-- заводить нельзя, а видный требует колонки цифр — её здесь и не рисуем.
+function chrome.menu(canvas, width: any, height: any, items, failure, open: any, cursor: any)
     local box_w = 40
     if box_w > width - 4 then box_w = width - 4 end
     if box_w < 12 then box_w = 12 end
@@ -220,13 +226,21 @@ function chrome.menu(canvas, width: any, height: any, items, failure)
     elseif #items == 0 then
         canvas:put(left + 2, top + 2, styles.hint:render("приложение не объявило ни одного окна"), span - 2)
     else
+        local at = math.tointeger(tonumber(cursor) or 1) or 1
         for index, item in ipairs(items) do
-            local label = " " .. index .. "  " .. clip(item.title, span - 6) .. " "
-            canvas:put(left + 1, top + index, styles.tab_idle:width(span):render(label), span)
-            hits[#hits + 1] = {row = top + index, from = left + 1, to = left + span, index = index}
+            local label = " " .. clip(item.title, span - 2) .. " "
+            local style = index == at and styles.title or styles.tab_idle
+            canvas:put(left + 1, top + index, style:width(span):render(label), span)
+            hits[#hits + 1] = {
+                row = top + index, from = left + 1, to = left + span, index = index,
+                -- Уровень и номер строки — то, по чему композитор двигает
+                -- курсор; пометка — то, по чему он открывает.
+                level = 1, slot = index, cursor = index == at,
+            }
         end
     end
-    canvas:put(left + 2, top + box_h - 1, styles.hint:render(" цифра — открыть · esc — закрыть "), span)
+    canvas:put(left + 2, top + box_h - 1,
+        styles.hint:render(" стрелки — выбрать · enter — открыть · esc — закрыть "), span)
     return hits
 end
 
