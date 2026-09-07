@@ -325,6 +325,11 @@ local function run(options: any)
         windows[#windows + 1] = window
     end
 
+    -- Объявлено заранее: укладка считает сетку значков, а сетка известна
+    -- ниже. Забыть вызвать её после перечитывания нельзя — тогда значок без
+    -- координат не нарисуется вовсе.
+    local arrange_desktop: any
+
     -- Раскладка перечитывается по команде, а не по таймеру: её меняют
     -- ручки оболочки, и они же говорят композитору, что пора обновиться.
     local function reload_desktop()
@@ -337,6 +342,7 @@ local function run(options: any)
             items = type(items) == "table" and items or {},
             failure = failure and tostring(failure) or nil,
         }
+        arrange_desktop()
     end
 
     -- Шаг сетки значков объявляет тема: она рисует значок и знает, сколько
@@ -366,6 +372,52 @@ local function run(options: any)
         if offset < 0 then offset = 0 end
         local cell = math.tointeger((offset + size // 2) // size) or 0
         return origin + cell * size
+    end
+
+    -- Значок без координат ставит композитор: ширину экрана знает только
+    -- он, а раскладку оболочка составляет раньше, чем терминал сообщил
+    -- размер. Вычисленное место НЕ записывается обратно — иначе первый же
+    -- кадр превратил бы автопосаженный значок в поставленный руками, и
+    -- человек потерял бы разницу, ради которой это сделано.
+    --
+    -- Мест не хватило — значок ложится в последнюю ячейку поверх соседа.
+    -- Значки внахлёст видно и можно растащить; пропавший за краем читается
+    -- как «я его случайно удалил».
+    arrange_desktop = function()
+        local gw, gh, gl = icon_grid()
+
+        local rows = math.tointeger((desktop_last - desktop_top + 1) // gh) or 1
+        if rows < 1 then rows = 1 end
+        local columns = math.tointeger((width - gl + 1) // gw) or 1
+        if columns < 1 then columns = 1 end
+
+        local taken: any = {}
+        for _, item in ipairs(desk.items) do
+            if not item.auto and tonumber(item.x) and tonumber(item.y) then
+                taken[tostring(item.x) .. ":" .. tostring(item.y)] = true
+            end
+        end
+
+        local slot = 0
+        for _, item in ipairs(desk.items) do
+            if item.auto or tonumber(item.x) == nil or tonumber(item.y) == nil then
+                local x, y = gl, desktop_top
+                local steps = 0
+                while steps <= columns * rows do
+                    local column = math.tointeger(slot // rows) or 0
+                    local row = math.tointeger(slot % rows) or 0
+                    if column >= columns then break end
+                    x = gl + column * gw
+                    y = desktop_top + row * gh
+                    slot = slot + 1
+                    steps = steps + 1
+                    if not taken[tostring(x) .. ":" .. tostring(y)] then break end
+                end
+                item.x, item.y = x, y
+                item.auto = true
+                taken[tostring(x) .. ":" .. tostring(y)] = true
+            end
+        end
     end
 
     local function desktop_item(id)
@@ -613,9 +665,15 @@ local function run(options: any)
                     local gw, gh, gl = icon_grid()
                     item.x = snap(item.x, gw, gl)
                     item.y = snap(item.y, gh, desktop_top)
+                    -- Перетащенный значок перестаёт быть автопосаженным —
+                    -- но только если место записалось: иначе он вернулся на
+                    -- прежнее, и прежним было автопосаженное.
+                    local was_auto = item.auto
+                    item.auto = nil
                     if move_item then
                         local ok, err = move_item(drag.id, item.x, item.y)
                         if not ok then
+                            item.auto = was_auto
                             -- Значок обязан вернуться туда, откуда взят:
                             -- иначе до перезапуска он на новом месте, а
                             -- после — на старом, и человек решит, что
@@ -1046,6 +1104,7 @@ local function run(options: any)
                     if h >= MIN_SCREEN_H then height = h end
                     canvas = tty.canvas(width, height)
                     apply_layout()
+                    arrange_desktop()
                     for _, window in ipairs(windows) do
                         if window.maximized then
                             window.x, window.y = 1, desktop_top
