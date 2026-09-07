@@ -11,6 +11,15 @@ entries:
     modules:
       - tty
 
+  # butschster.tui_desktop.desktop:window_api
+  - name: window_api
+    kind: library.lua
+    meta:
+      comment: Что окно может попросить у десктопа — открыть, закрыть, поднять соседнее окно. Своего доступа к процессам у окна нет.
+    source: file://window_api.lua
+    modules:
+      - process
+
   # butschster.tui_desktop.desktop:desktop
   - name: desktop
     kind: process.lua

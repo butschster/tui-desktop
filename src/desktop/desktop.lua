@@ -268,8 +268,14 @@ local function main()
         local command = type(spec.command) == "string" and spec.command ~= ""
             and spec.command or DEFAULT_COMMAND
 
+        -- Окно-приложение получает свой параметр (`args`), окно с программой —
+        -- команду. Одно поле на оба смысла читалось бы как «команда», и окно
+        -- подробностей открывали бы строкой «/bin/bash».
+        local argument = type(spec.args) == "string" and spec.args ~= ""
+            and spec.args or command
+
         local pid, perr = process.with_options({terminal = grant})
-            :spawn_monitored(entry, WINDOW_HOST, command)
+            :spawn_monitored(entry, WINDOW_HOST, argument)
         if not pid then
             view:close()
             return nil, tostring(perr)

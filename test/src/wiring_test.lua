@@ -167,6 +167,20 @@ local function define_tests()
                 "butschster.tui_desktop.persist:apps")
         end)
 
+        test.it("даёт окну попросить десктоп, но не запустить что-либо", function()
+            -- Окно умеет обратиться к композитору (открыть соседнее окно), но
+            -- своего запуска процессов и программ у него нет. Код окна
+            -- приходит по HTTP, и эта граница отделяет «попросить десктоп» от
+            -- «сделать что угодно».
+            local actions = actions_of(get("butschster.tui_desktop.security:app_window_scope"))
+            test.is_true(has(actions, "process.send"), "окно должно уметь послать команду")
+            test.is_true(has(actions, "process.registry"), "и найти адресата")
+            test.is_false(has(actions, "process.spawn"), "порождать процессы окно не может")
+            test.is_false(has(actions, "process.spawn.monitored"), "и так тоже не может")
+            test.is_false(has(actions, "exec.run"), "запускать программы окно не может")
+            test.is_false(has(actions, "registry.apply"), "менять реестр окно не может")
+        end)
+
         test.it("закрывает ручки политикой, которую внедряет приложение", function()
             local policy = data_of(get(ACCESS_POLICY_ID))
             local resources = policy.policy and policy.policy.resources

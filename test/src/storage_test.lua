@@ -73,17 +73,34 @@ local function define_tests()
 
     test.describe("butschster.tui_desktop app entries", function()
         test.it("не пускает окну чужие модули", function()
-            -- Окно рисует себя и читает данные; порождать процессы и ходить
-            -- наружу ему нечем, и отказ обязан называть модуль по имени.
-            local refused = apps.rejected_modules({"tty", "process", "exec", "httpclient"})
+            -- Отказ обязан называть модуль по имени: «окно не работает» без
+            -- имени отправляет искать ошибку в коде окна.
+            local refused = apps.rejected_modules({"tty", "exec", "httpclient", "os"})
             test.eq(#refused, 3)
 
-            local allowed = apps.normalize_modules({"sql", "process", "json"})
+            local allowed = apps.normalize_modules({"sql", "json"})
             local names = {}
             for _, name in ipairs(allowed) do names[name] = true end
             test.is_true(names.sql, "sql разрешён — без него не будет виджетов с данными")
             test.is_true(names.json, "json разрешён")
-            test.is_nil(names.process, "process окну не выдаётся")
+        end)
+
+        test.it("даёт окну попросить, но не запустить", function()
+            -- Окно умеет обратиться к композитору (открыть соседнее окно), но
+            -- своего запуска процессов и программ у него нет. Код окна
+            -- приходит по HTTP, и эта граница отделяет «попросить десктоп» от
+            -- «сделать что угодно».
+            local names = {}
+            for _, name in ipairs(apps.normalize_modules({})) do names[name] = true end
+            test.is_true(names.process, "без process окно не дотянется до композитора")
+
+            local entry = apps.build_entry({
+                name = "probe", title = "Проба", width = 10, height = 4,
+                source = "return {main = function() end}", modules = {},
+            })
+            test.eq((entry.data.imports or {}).desktop,
+                "butschster.tui_desktop.desktop:window_api",
+                "библиотека десктопа подключается каждому окну")
         end)
 
         test.it("всегда добавляет tty и channel", function()

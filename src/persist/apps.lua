@@ -22,6 +22,9 @@ apps.ALLOWED_MODULES = {
     json = true,
     sql = true,
     env = true,
+    -- Нужен, чтобы окно могло попросить композитор открыть соседнее окно.
+    -- Права при этом узкие: послать сообщение и найти адресата, не более.
+    process = true,
 }
 
 apps.DEFAULT_MODULES = {"channel", "time", "tty"}
@@ -44,6 +47,8 @@ function apps.normalize_modules(requested)
     for _, name in ipairs(type(requested) == "table" and requested or {}) do add(name) end
     add("channel")
     add("tty")
+    -- Библиотека `desktop` подключается каждому окну, а ей нужен process.
+    add("process")
     table.sort(out)
     return out
 end
@@ -75,6 +80,7 @@ function apps.build_entry(window)
             source = window.source,
             method = "main",
             modules = apps.normalize_modules(window.modules),
+            imports = {desktop = "butschster.tui_desktop.desktop:window_api"},
             security = {policies = {apps.POLICY}},
         },
     }
