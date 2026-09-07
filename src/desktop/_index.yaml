@@ -18,6 +18,13 @@ entries:
       comment: Что запись реестра говорит о своей программе — тип окна и признак «показывать в меню». Чистые таблицы, ни одного вызова в рантайм.
     source: file://programs.lua
 
+  # butschster.tui_desktop.desktop:pixels
+  - name: pixels
+    kind: library.lua
+    meta:
+      comment: Сборка пиксельного кадра — пробелы под картинками, разбор размещений и попаданий. Чистая арифметика, ни одного вызова в рантайм.
+    source: file://pixels.lua
+
   # butschster.tui_desktop.desktop:window_api
   - name: window_api
     kind: library.lua
@@ -60,6 +67,7 @@ entries:
       repo: butschster.tui_desktop.persist:repo
       apps: butschster.tui_desktop.persist:apps
       programs: butschster.tui_desktop.desktop:programs
+      pixels: butschster.tui_desktop.desktop:pixels
       # Ради одного ключа: имя композитора кладётся окну в контекст под тем
       # же именем, под которым окно его читает.
       window_api: butschster.tui_desktop.desktop:window_api

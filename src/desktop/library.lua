@@ -34,6 +34,11 @@ local apps = require("apps")
 -- умолчание, посчитанное в двух местах, однажды разойдётся.
 local programs = require("programs")
 
+-- Сборка пиксельного кадра: пробелы под картинками, разбор размещений и
+-- попаданий. Отдельной библиотекой, потому что это арифметика — её проверяют
+-- без терминала и без графики.
+local pixels = require("pixels")
+
 -- Протокол «окно просит десктоп». Отсюда механика берёт ключ, которым имя
 -- композитора кладётся окну в контекст: разойдись ключ у отправителя и
 -- получателя, окно молча обращалось бы к штатному имени.
@@ -133,6 +138,43 @@ local function run(options: any)
     local chrome: any = options.chrome
     if type(chrome) ~= "table" then
         return nil, "композитору не передана тема (options.chrome)"
+    end
+
+    -- Пиксельный хром: рамки, заголовки, значки и панель задач приезжают
+    -- растрами, содержимое окон остаётся символами. Включается ЯВНО — тем же
+    -- решением, которым выбирают тему: терминал, умеющий графику, не повод
+    -- рисовать иначе, чем человек просил.
+    --
+    -- Размер ячейки спрашивает ОБОЛОЧКА и передаёт сюда функцией. Так вышло не
+    -- из вкуса: модуль `gfx` есть не в каждом рантайме, а запись, объявившая
+    -- недоступный модуль, роняет боот целиком («node with ID {gfx :gfx} not
+    -- found») — измерено. Механика, объявившая `gfx`, стала бы негодной везде,
+    -- где графики нет, включая тех, кому пиксели не нужны. Решение при этом
+    -- осталось здесь: без размера ячейки режим НЕ включается и называет
+    -- причину — картинка не того размера выглядит как ошибка рисования, а не
+    -- как незаданный вопрос.
+    local PIXELS = options.pixels == true
+    local cell_w, cell_h = 0, 0
+    if PIXELS then
+        if type(chrome.paint) ~= "function" then
+            return nil, "пиксельный режим не включается: тема не умеет chrome.paint"
+        end
+        if type(options.cell_size) ~= "function" then
+            return nil, "пиксельный режим не включается: оболочка не дала, чем узнать "
+                .. "размер ячейки (options.cell_size — обычно gfx.cell_size)"
+        end
+        local w, h = options.cell_size()
+        if type(w) ~= "number" or type(h) ~= "number" then
+            -- gfx.cell_size() отвечает (nil, причина): вторым значением тут
+            -- приезжает именно она.
+            return nil, "пиксельный режим не включается: " .. tostring(h)
+        end
+        cell_w = math.tointeger(math.floor(w)) or 0
+        cell_h = math.tointeger(math.floor(h)) or 0
+        if cell_w < 1 or cell_h < 1 then
+            return nil, "пиксельный режим не включается: размер ячейки "
+                .. tostring(w) .. "x" .. tostring(h) .. " невозможен"
+        end
     end
 
     local SERVICE_NAME = type(options.service_name) == "string"
@@ -317,6 +359,11 @@ local function run(options: any)
     -- Причина последнего отказа. Показывается вместо статуса: у оболочки
     -- терминала нет ни лога, ни всплывающих окон, и рассказать иначе негде.
     local notice = ""
+    -- Что стоил последний кадр. Отдаётся командным каналом, потому что цену
+    -- нарезки хрома иначе не увидеть: неверно порезанный хром рисует
+    -- ПРАВИЛЬНЫЙ экран, просто медленный, а у медленного нет ни стека, ни
+    -- симптома — по ssh его не найти глазами.
+    local frame_cost: any = {}
     local menu_hits: any = {}
     local clock = ""
 
@@ -501,36 +548,71 @@ local function run(options: any)
         return nil
     end
 
+    -- Содержимое окна в пиксельном режиме кладёт КОМПОЗИТОР.
+    --
+    -- В режиме символов строки окна кладёт тема — она же рисует вокруг них
+    -- рамку одним куском. Растровая тема рамку рисует картинками и в канву не
+    -- пишет вовсе; строки при этом остаются символами (bash умеет только их),
+    -- и положить их больше некому.
+    local function put_content(window)
+        if type(window.rows) ~= "table" or #window.rows == 0 then return end
+        local left = math.tointeger(insets.left) or 1
+        local top_inset = math.tointeger(insets.top) or 1
+        local x = (math.tointeger(window.x) or 1) + left
+        local y = (math.tointeger(window.y) or 1) + top_inset
+        local span = (math.tointeger(window.w) or 0) - FRAME_W
+        local room = (math.tointeger(window.h) or 0) - FRAME_H
+        if span < 1 or room < 1 then return end
+
+        -- Лишние строки режутся здесь, как и в теме символов: в момент смены
+        -- размера приезжает кадр прежней геометрии, и лишняя строка легла бы
+        -- ниже окна — на экране это читается как сломанная рамка, а не как
+        -- отставший кадр.
+        local rows: any = window.rows
+        if #rows > room then
+            local cut = {}
+            for index = 1, room do cut[index] = rows[index] end
+            rows = cut
+        end
+        canvas:put_rows(x, y, rows :: {string}, span)
+    end
+
     local function draw()
         canvas:clear(" ")
 
-        -- Фон рисует и значки стола, если тема умеет: композитор отдаёт ей
-        -- раскладку и границы свободного места, а обратно берёт разметку
-        -- попаданий — по ней же считается щелчок.
-        desk_hits = {}
-        local painted = chrome.fill(canvas, width, height, {
-            top = desktop_top,
-            bottom = desktop_last,
-            items = desk.items,
-            failure = desk.failure,
-            selected = selected_id,
-        })
-        if type(painted) == "table" then desk_hits = painted end
-
-        if #windows == 0 then
-            chrome.empty_desktop(canvas, width, height, HINT)
-        end
-
         local top = focused()
-        for _, window in ipairs(windows) do
-            if not window.minimized then
-                chrome.window(canvas, window, top ~= nil and window.id == top.id)
-            end
-        end
-
         -- Считается до ветвления по `top`: после if/else линтер держит его
         -- сужённым и поле `id` для него уже не существует.
         local focused_id = top and top.id or nil
+
+        desk_hits = {}
+        if not PIXELS then
+            -- Фон рисует и значки стола, если тема умеет: композитор отдаёт ей
+            -- раскладку и границы свободного места, а обратно берёт разметку
+            -- попаданий — по ней же считается щелчок.
+            local painted = chrome.fill(canvas, width, height, {
+                top = desktop_top,
+                bottom = desktop_last,
+                items = desk.items,
+                failure = desk.failure,
+                selected = selected_id,
+            })
+            if type(painted) == "table" then desk_hits = painted end
+
+            if #windows == 0 then
+                chrome.empty_desktop(canvas, width, height, HINT)
+            end
+
+            for _, window in ipairs(windows) do
+                if not window.minimized then
+                    chrome.window(canvas, window, top ~= nil and window.id == top.id)
+                end
+            end
+        else
+            for _, window in ipairs(windows) do
+                if not window.minimized then put_content(window) end
+            end
+        end
 
         local status
         if top then
@@ -541,19 +623,47 @@ local function run(options: any)
         end
         if notice ~= "" then status = notice end
 
-        bar_hits = chrome.bars(canvas, width, height, {
-            windows = windows,
-            focused_id = focused_id,
-            menu_open = menu ~= nil,
-            status = status,
-            clock = clock,
-        })
-        if type(bar_hits) ~= "table" then bar_hits = {} end
+        -- Состояние для растровой темы — объединение того, что в режиме
+        -- символов приезжает тремя вызовами. Имена полей те же нарочно: тема,
+        -- умеющая оба режима, узнаёт их без перевода.
+        local images: any = nil
+        if PIXELS then
+            local painted = chrome.paint({
+                width = width, height = height,
+                top = desktop_top, bottom = desktop_last,
+                windows = windows, focused_id = focused_id,
+                items = desk.items, failure = desk.failure, selected = selected_id,
+                menu = menu and {items = menu.items, failure = menu.failure, open = menu.open} or nil,
+                status = status, clock = clock, hint = HINT,
+            }, cell_w, cell_h)
 
-        menu_hits = {}
-        if menu then
-            local hits = chrome.menu(canvas, width, height, menu.items, menu.failure, menu.open)
-            if type(hits) == "table" then menu_hits = hits end
+            local complaints
+            -- Пробелы под картинками кладёт `frame`, и делает это ПОСЛЕ
+            -- содержимого: иначе строка окна вылезла бы из-под чужой рамки.
+            images, complaints = pixels.frame(canvas, painted)
+            local hits, quarrel = pixels.hits(painted)
+            desk_hits, bar_hits, menu_hits = hits.desktop, hits.bars, hits.menu
+            if quarrel then complaints[#complaints + 1] = quarrel end
+            for _, complaint in ipairs(complaints) do
+                -- Отброшенное размещение видно только в логе: строка состояния
+                -- тут не годится — её рисует та же тема, которая ошиблась.
+                log:warn("тема отдала негодный кадр", {reason = complaint})
+            end
+        else
+            bar_hits = chrome.bars(canvas, width, height, {
+                windows = windows,
+                focused_id = focused_id,
+                menu_open = menu ~= nil,
+                status = status,
+                clock = clock,
+            })
+            if type(bar_hits) ~= "table" then bar_hits = {} end
+
+            menu_hits = {}
+            if menu then
+                local hits = chrome.menu(canvas, width, height, menu.items, menu.failure, menu.open)
+                if type(hits) == "table" then menu_hits = hits end
+            end
         end
 
         -- Аппаратный курсор один на экран, поэтому его получает только
@@ -568,7 +678,16 @@ local function run(options: any)
             }
         end
 
-        assert(out:present(canvas:rows(), {cursor = cursor}))
+        local stats = assert(out:present(canvas:rows(), {cursor = cursor, images = images}))
+        frame_cost = {
+            changed_rows = stats.changed_rows,
+            bytes_written = stats.bytes_written,
+            -- Сколько растров ушло на самом деле, в отличие от того, сколько
+            -- кадр объявил. Рантайм, который этого не считает, оставит поле
+            -- пустым — и «не измеряли» не притворится нулём.
+            placements_sent = stats.placements_sent,
+            images = images and #images or 0,
+        }
     end
 
     -- open_window(spec, from) — `from` это отправитель команды. Если он
@@ -763,7 +882,11 @@ local function run(options: any)
         local from = window.x + window.w - 1 - span
         if x < from or x > from + span - 1 then return nil end
         local slot = math.tointeger((x - from) // step) or 0
-        local button: any = chrome.BUTTONS[slot + 1]
+        -- Тема без таблицы кнопок — не повод падать: до этой ветки доходит
+        -- только та, что не считает хит-тест сама, и промах по кнопке дешевле
+        -- погасшего стола.
+        local set: any = chrome.BUTTONS
+        local button: any = type(set) == "table" and set[slot + 1] or nil
         return button and button.id or nil
     end
 
@@ -1113,6 +1236,11 @@ local function run(options: any)
                 -- человеку. Наружу она отдаётся, чтобы «отказ показан» можно
                 -- было проверить, а не рассматривать глазами.
                 notice = notice,
+                -- Цена последнего кадра: изменившиеся строки, отправленные
+                -- растры, байты. Мера для §8 FR-005 и единственный способ
+                -- заметить, что хром порезан неверно.
+                frame = frame_cost,
+                pixels = PIXELS,
                 restore = restore_report}, to, topic)
             return false
         end

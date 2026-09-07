@@ -11,6 +11,7 @@ local channel = require("channel")
 local time = require("time")
 
 local programs = require("programs")
+local pixels = require("pixels")
 local window_api = require("window_api")
 
 local NS = "butschster.tui_desktop"
@@ -160,6 +161,44 @@ local function boot_composer(service)
     end
     test.is_true(false, "композитор не зарегистрировался под именем " .. service)
     return desk
+end
+
+-- Композитор в пиксельном режиме. Вид проверки приезжает ему аргументом:
+-- исправный размер ячейки, промолчавший терминал или тема без chrome.paint.
+local function spawn_pixel_composer(service, watcher, kind)
+    local view = tty.viewport({width = 80, height = 24})
+    test.not_nil(view, "viewport не создался")
+    local grant = view:grant()
+    test.not_nil(grant, "грант на viewport не выдался")
+
+    local pid, err = process.with_options({terminal = grant})
+        :spawn_monitored("app:test_composer_pixels", "app:processes",
+            service .. "|" .. watcher .. "|" .. kind)
+    test.is_nil(err)
+    test.not_nil(pid, "композитор не запустился")
+    return {pid = pid, view = view}
+end
+
+-- Ждать регистрации имеет смысл только там, где композитор обязан подняться:
+-- у отказа ждать нечего, и восьмисекундное ожидание там — просто медленная
+-- проверка, а медленную проверку перестают запускать.
+local function boot_pixel_composer(service, watcher, kind)
+    local desk: any = spawn_pixel_composer(service, watcher, kind)
+    local deadline = time.now():unix_nano() + 8000000000
+    while time.now():unix_nano() < deadline do
+        if process.registry.lookup(service) then return desk end
+        channel.select({time.after("100ms"):case_receive()})
+    end
+    test.is_true(false, "композитор не поднялся под именем " .. service)
+    return desk
+end
+
+-- Строки экрана композитора: viewport принадлежит проверке, поэтому кадр
+-- читается тем же снимком, каким композитор читает кадры своих окон.
+local function screen_of(desk: any)
+    local snapshot: any = desk.view:snapshot(-1)
+    test.not_nil(snapshot, "снимок экрана композитора не читается")
+    return snapshot.rows or {}
 end
 
 -- Щелчок мышью — тот же путь, которым идёт настоящая мышь: событие едет в
@@ -682,6 +721,180 @@ local function define_tests()
                 "desktop.refresh обязан выполняться: " .. tostring(refreshed.error))
 
             process.terminate(tostring(desk.pid))
+        end)
+    end)
+
+    test.describe("butschster.tui_desktop пиксельный хром", function()
+        test.it("без размера ячейки режим не включается и называет причину", function()
+            -- Догадка «8×16» права достаточно часто, чтобы выглядеть верной, и
+            -- неверна достаточно часто, чтобы её приняли за ошибку рисования.
+            local watcher = "butschster.tui_desktop.test.pixels.watcher"
+            local box = mailbox(process.inbox())
+            process.registry.register(watcher)
+
+            local silent = spawn_pixel_composer(
+                "butschster.tui_desktop.test.pixels.silent", watcher, "silent")
+            local told = box.take("composer.refused")
+            test.is_true(tostring(told.error):find("не включается", 1, true) ~= nil,
+                "отказ обязан называться отказом: " .. tostring(told.error))
+            test.is_true(tostring(told.error):find("did not say how large a cell is", 1, true) ~= nil,
+                "отказ обязан нести причину от терминала: " .. tostring(told.error))
+            process.terminate(tostring(silent.pid))
+
+            -- И оболочка, которая вовсе не дала, чем спросить.
+            local mute = spawn_pixel_composer(
+                "butschster.tui_desktop.test.pixels.mute", watcher, "nothing")
+            local second = box.take("composer.refused")
+            test.is_true(tostring(second.error):find("cell_size", 1, true) ~= nil,
+                "отказ обязан называть, чего не хватило: " .. tostring(second.error))
+            process.terminate(tostring(mute.pid))
+
+            -- И тема, которая рисовать растрами не умеет.
+            local plain = spawn_pixel_composer(
+                "butschster.tui_desktop.test.pixels.cells", watcher, "cells_theme")
+            local third = box.take("composer.refused")
+            test.is_true(tostring(third.error):find("chrome.paint", 1, true) ~= nil,
+                "отказ обязан называть, чего нет у темы: " .. tostring(third.error))
+            process.terminate(tostring(plain.pid))
+
+            process.registry.unregister(watcher)
+        end)
+
+        test.it("хром картинками, содержимое символами, под картинками пробелы", function()
+            local service = "butschster.tui_desktop.test.pixels.live"
+            local watcher = "butschster.tui_desktop.test.pixels.live.watcher"
+            local box = mailbox(process.inbox())
+            process.registry.register(watcher)
+            local desk = boot_pixel_composer(service, watcher, "ok")
+
+            local opened = ask_desktop(service, box, "desktop.open",
+                {entry = "app:painter_window", x = 5, y = 4, w = 30, h = 8})
+            test.is_true(opened.ok == true, "окно не открылось: " .. tostring(opened.error))
+            local first = tostring(opened.window.id)
+
+            -- Ждём кадра с содержимым: окно рисует себя не мгновенно, а
+            -- признак готовности виден в списке.
+            local listing: any = nil
+            local deadline = time.now():unix_nano() + 8000000000
+            while time.now():unix_nano() < deadline do
+                listing = ask_desktop(service, box, "desktop.list", {})
+                if listing.windows[1] ~= nil and listing.windows[1].ready == true then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.is_true(listing.pixels == true, "композитор обязан быть в пиксельном режиме")
+
+            -- Содержимое окна кладёт КОМПОЗИТОР: в режиме символов это делала
+            -- тема заодно с рамкой, а растровая тема в канву не пишет вовсе.
+            local content = tostring(screen_of(desk)[5] or "")
+            test.is_true(content:find("СОДЕРЖИМОЕ", 1, true) ~= nil,
+                "строка окна обязана лежать в кадре символами: [" .. content .. "]")
+
+            -- Теперь второе окно, чей ЗАГОЛОВОК ложится ровно на эту строку.
+            -- Без пробелов под картинкой символ остался бы на месте и вылез
+            -- из-под неё при первой же перерисовке строки — проверять пустую
+            -- строку было бы проверкой без улик, там и так пусто.
+            local second = ask_desktop(service, box, "desktop.open",
+                {entry = "app:idle_window", x = 5, y = 5, w = 30, h = 8})
+            test.is_true(second.ok == true, "второе окно не открылось")
+            test.eq(ask_desktop(service, box, "desktop.list", {}).focused,
+                tostring(second.window.id), "новое окно наверху")
+
+            local covered: any = nil
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                covered = tostring(screen_of(desk)[5] or "")
+                if covered:find("СОДЕРЖИМОЕ", 1, true) == nil then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.is_true(covered:find("СОДЕРЖИМОЕ", 1, true) == nil,
+                "под размещением обязаны быть пробелы: [" .. covered .. "]")
+
+            -- Цена кадра видна снаружи: неверно порезанный хром рисует
+            -- ПРАВИЛЬНЫЙ экран, просто медленный, и найти это иначе нечем.
+            local costed = ask_desktop(service, box, "desktop.list", {})
+            test.not_nil(costed.frame, "композитор обязан отдавать цену кадра")
+            test.is_true((math.tointeger(costed.frame.images) or 0) >= 3,
+                "растровая тема объявила размещения, их должно быть видно")
+            -- `placements_sent` тут намеренно не проверяется: тема этой
+            -- проверки растров не создаёт вовсе, поэтому ноль в этом поле
+            -- получился бы при любой ошибке нарезки. Мера настоящая — у темы
+            -- с настоящими растрами; здесь проверяется только, что композитор
+            -- цену кадра отдаёт наружу.
+
+            click(desk, 5, 24)
+            local raised: any = nil
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                raised = ask_desktop(service, box, "desktop.list", {})
+                if raised.focused == first then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.eq(raised.focused, first,
+                "щелчок по разметке растровой темы обязан поднимать окно")
+
+            process.registry.unregister(watcher)
+            process.terminate(tostring(desk.pid))
+        end)
+    end)
+
+    test.describe("butschster.tui_desktop сборка пиксельного кадра", function()
+        -- Арифметика без терминала и без графики: сюда приезжает то, что
+        -- вернула тема, и здесь решается, попадёт ли оно в кадр.
+        -- Канва-свидетель: записывает вызовы вместо рисования. Одной
+        -- таблицей, а не двумя значениями, — проверяющий иначе считает второе
+        -- значение отсутствующим.
+        local function recorder()
+            local box: any = {calls = {}}
+            local canvas: any = {}
+            function canvas:put(x, y, text, span)
+                box.calls[#box.calls + 1] = {x = x, y = y, text = text, span = span}
+            end
+            box.canvas = canvas
+            return box
+        end
+
+        test.it("стирает символы ровно под картинкой", function()
+            local box = recorder()
+            local images = pixels.frame(box.canvas,
+                {placements = {{id = "title", x = 5, y = 4, cols = 3, rows = 2}}})
+            test.eq(#images, 1)
+            test.eq(#box.calls, 2, "по строке на каждую строку размещения")
+            test.eq(box.calls[1].x, 5)
+            test.eq(box.calls[1].y, 4)
+            test.eq(box.calls[1].text, "   ")
+            test.eq(box.calls[2].y, 5)
+        end)
+
+        test.it("негодное размещение выбрасывает и называет, а кадр не роняет", function()
+            -- `present` отвергает КАДР целиком, если хоть одно размещение
+            -- неверно, а композитор зовёт его через assert: тема с одной
+            -- опечаткой погасила бы весь стол.
+            local box = recorder()
+            local images, complaints = pixels.frame(box.canvas, {placements = {
+                {id = "", x = 1, y = 1, cols = 1, rows = 1},
+                {id = "нулевой", x = 0, y = 1, cols = 1, rows = 1},
+                {id = "пустой", x = 1, y = 1, cols = 0, rows = 1},
+                {id = "годный", x = 2, y = 2, cols = 2, rows = 1},
+                {id = "годный", x = 9, y = 9, cols = 2, rows = 1},
+            }})
+            test.eq(#images, 1, "в кадр обязано попасть только годное")
+            test.eq(images[1].id, "годный")
+            test.eq(#complaints, 4, "и каждое негодное обязано быть названо")
+            test.is_true(tostring(complaints[4]):find("дважды", 1, true) ~= nil,
+                "повтор id — это спор о том, что показать, то есть мигание")
+        end)
+
+        test.it("плоский список попаданий не угадывает, а жалуется", function()
+            -- Угадать тут нельзя: `id` у стола, у полос и у меню значит разное,
+            -- а молча потерянные щелчки выглядят как мёртвый интерфейс.
+            local hits, quarrel = pixels.hits({hits = {{row = 1, from = 1, to = 3, id = "w1"}}})
+            test.eq(#hits.bars, 0)
+            test.not_nil(quarrel)
+
+            local grouped = pixels.hits({hits = {bars = {{row = 1, from = 1, to = 3, id = "w1"}}}})
+            test.eq(#grouped.bars, 1)
+            test.eq(#grouped.desktop, 0)
+            test.eq(#grouped.menu, 0)
         end)
     end)
 

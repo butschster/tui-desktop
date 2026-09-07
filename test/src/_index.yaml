@@ -43,6 +43,7 @@ entries:
     imports:
       test: wippy.test:test
       programs: butschster.tui_desktop.desktop:programs
+      pixels: butschster.tui_desktop.desktop:pixels
       window_api: butschster.tui_desktop.desktop:window_api
     method: run
 
@@ -93,6 +94,37 @@ entries:
     imports:
       library: butschster.tui_desktop.desktop:library
       chrome: butschster.tui_desktop.desktop:chrome
+
+  - name: pixel_chrome
+    kind: library.lua
+    meta:
+      comment: Растровая тема для проверок — размещения без растров, попадания в ячейках.
+    source: file://test_chrome_pixels.lua
+
+  # Композитор в пиксельном режиме. Модуля gfx у него нет намеренно: размер
+  # ячейки приносит оболочка, и проверка ходит тем же путём, что настоящая.
+  - name: test_composer_pixels
+    kind: process.lua
+    meta:
+      comment: Композитор с пиксельным хромом на viewport теста.
+    source: file://test_composer_pixels.lua
+    method: main
+    modules: [channel, env, json, logger, process, registry, sql, time, tty]
+    imports:
+      library: butschster.tui_desktop.desktop:library
+      pixel_chrome: app:pixel_chrome
+      cell_chrome: butschster.tui_desktop.desktop:chrome
+
+  - name: painter_window
+    kind: process.lua
+    meta:
+      type: tui_desktop.window
+      title: Окно, которое рисует
+      in_menu: false
+      comment: Окно, которое кладёт в свой viewport одну узнаваемую строку.
+    source: file://painter_window.lua
+    method: main
+    modules: [channel, time, tty]
 
   - name: dialog_probe
     kind: process.lua
