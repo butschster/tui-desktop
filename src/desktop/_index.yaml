@@ -11,14 +11,28 @@ entries:
     modules:
       - tty
 
+  # butschster.tui_desktop.desktop:programs
+  - name: programs
+    kind: library.lua
+    meta:
+      comment: Что запись реестра говорит о своей программе — тип окна и признак «показывать в меню». Чистые таблицы, ни одного вызова в рантайм.
+    source: file://programs.lua
+
   # butschster.tui_desktop.desktop:window_api
   - name: window_api
     kind: library.lua
     meta:
-      comment: Что окно может попросить у десктопа — открыть, закрыть, поднять соседнее окно. Своего доступа к процессам у окна нет.
+      comment: Что окно может попросить у десктопа — открыть, закрыть, поднять соседнее окно. Имя композитора берётся из контекста процесса, а не из константы.
     source: file://window_api.lua
     modules:
       - process
+      # Имя своего композитора окно читает отсюда. Модуль объявлен ЗДЕСЬ, а не
+      # у записи окна: библиотека получает свои модули, поэтому окна, написанные
+      # до этого поля, работают без единой правки.
+      - ctx
+      # Отказ «десктоп не найден» иначе не расскажет о себе никак: `open`
+      # ответа не ждёт, и окно, не проверившее возврат, промолчит.
+      - logger
 
   # butschster.tui_desktop.desktop:library
   #
@@ -42,6 +56,10 @@ entries:
     imports:
       repo: butschster.tui_desktop.persist:repo
       apps: butschster.tui_desktop.persist:apps
+      programs: butschster.tui_desktop.desktop:programs
+      # Ради одного ключа: имя композитора кладётся окну в контекст под тем
+      # же именем, под которым окно его читает.
+      window_api: butschster.tui_desktop.desktop:window_api
 
   # butschster.tui_desktop.desktop:desktop
   - name: desktop

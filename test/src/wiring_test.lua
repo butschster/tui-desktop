@@ -6,6 +6,12 @@
 -- командный канал обязан НЕ иметь права порождать процессы.
 local test = require("test")
 local registry = require("registry")
+local process = require("process")
+local channel = require("channel")
+local time = require("time")
+
+local programs = require("programs")
+local window_api = require("window_api")
 
 local NS = "butschster.tui_desktop"
 local TERMINAL_ID = "butschster.tui_desktop:terminal"
@@ -15,6 +21,8 @@ local DESKTOP_ID = "butschster.tui_desktop.desktop:desktop"
 local LIBRARY_ID = "butschster.tui_desktop.desktop:library"
 local CHROME_ID = "butschster.tui_desktop.desktop:chrome"
 local WINDOW_ID = "butschster.tui_desktop.desktop:window_pty"
+local PROGRAMS_ID = "butschster.tui_desktop.desktop:programs"
+local WINDOW_API_ID = "butschster.tui_desktop.desktop:window_api"
 local CONTROL_ID = "butschster.tui_desktop.api:control"
 local RUNTIME_POLICY_ID = "butschster.tui_desktop.security:desktop_runtime"
 local CHANNEL_POLICY_ID = "butschster.tui_desktop.security:desktop_command_channel"
@@ -62,6 +70,41 @@ local function has(list, needle)
         if item == needle then return true end
     end
     return false
+end
+
+-- Тело сообщения приезжает обёрнутым: payload — userdata, а внутри бывает ещё
+-- и массив из одного элемента. Прочитать поле напрямую значит получить nil без
+-- всякой ошибки.
+local function body_of(message: any)
+    local body: any = message:payload()
+    if type(body) == "userdata" then body = body:data() end
+    if type(body) == "table" and body[1] ~= nil and #body > 0 then body = body[1] end
+    return type(body) == "table" and body or {}
+end
+
+-- Запустить окно-заглушку так, как это делает композитор, и спросить, к кому
+-- она обращается. Формой реестра это не проверить: имя едет в контексте
+-- процесса, то есть существует только на живом запуске.
+local function ask_probe(entry, service: any)
+    -- Контекст собирается здесь, а не приходит готовым: ключ берётся у самой
+    -- библиотеки, а «имени не передали» — это отсутствие ключа, а не пустая
+    -- строка в нём.
+    local context: {string: any} = {}
+    if type(service) == "string" then context[window_api.CONTEXT_KEY] = service end
+
+    -- Форма вызова та же, что у композитора: сначала options (у него там
+    -- грант на viewport), потом контекст. Порядок не косметика — options,
+    -- поставленные после, не должны стирать контекст, а контекст — options.
+    local inbox = process.inbox()
+    local spawner: any = process.with_options({}):with_context(context)
+    local pid, err = spawner:spawn(entry, "app:processes", tostring(process.pid()))
+    test.is_nil(err)
+    test.not_nil(pid, entry .. " не запустилось")
+
+    local deadline = time.after("5s")
+    local selected = channel.select({inbox:case_receive(), deadline:case_receive()})
+    test.is_true(selected.channel == inbox, entry .. " не ответило")
+    return body_of(selected.value)
 end
 
 local function define_tests()
@@ -211,6 +254,103 @@ local function define_tests()
             if type(resources) == "string" then resources = {resources} end
             test.is_true(has(resources, "butschster.tui_desktop.api:*"),
                 "policy must cover butschster.tui_desktop.api:*")
+        end)
+    end)
+
+    test.describe("butschster.tui_desktop имя композитора", function()
+        test.it("окно узнаёт имя своего композитора при запуске", function()
+            -- Константа здесь была дефектом: под второй оболочкой композитор
+            -- зарегистрирован своим именем, и окно обращалось к чужому
+            -- (несуществующему) процессу. Молча — `api.open` ответа не ждёт.
+            local body = ask_probe("app:window_probe", "butschster.windows:shell")
+            test.eq(body.name, "butschster.windows:shell")
+            test.eq(body.source, "context")
+        end)
+
+        test.it("имя доезжает и до записи, которая про ctx не знает", function()
+            -- Модуль объявляет библиотека, а не запись окна: библиотека
+            -- получает СВОИ модули. Значит окна, написанные до этого поля, и
+            -- окна из мастерской (у неё узкий белый список) получают имя без
+            -- единой правки. Измерено, а не выведено: обратное означало бы,
+            -- что починка чинит только новые окна.
+            local body = ask_probe("app:window_probe_bare", "butschster.windows:shell")
+            test.eq(body.name, "butschster.windows:shell")
+            test.eq(body.source, "context")
+        end)
+
+        test.it("окно, запущенное без этого сведения, работает как раньше", function()
+            -- Старый композитор и чужой запуск имени не кладут. Такое окно
+            -- обязано взять штатное имя, а не упасть: до починки оно
+            -- обращалось ровно к нему и на штатной оболочке работало.
+            local body = ask_probe("app:window_probe", nil)
+            test.eq(body.name, window_api.DEFAULT_SERVICE)
+            test.eq(body.source, "default")
+        end)
+
+        test.it("механика и окно берут ключ из одного места", function()
+            -- Разойдись ключ у отправителя и получателя — окно молча взяло бы
+            -- штатное имя, то есть вернулся бы ровно тот дефект, который здесь
+            -- чинится. Поэтому композитор импортирует протокол окна, а не
+            -- повторяет строку.
+            local imports = data_of(get(LIBRARY_ID)).imports or {}
+            test.eq(qualify(imports.window_api, "butschster.tui_desktop.desktop"), WINDOW_API_ID,
+                "механика обязана брать ключ контекста у протокола окна")
+
+            local api = data_of(get(WINDOW_API_ID))
+            test.is_true(has(api.modules or {}, "ctx"),
+                "без модуля ctx имя композитора прочитать нечем")
+        end)
+    end)
+
+    test.describe("butschster.tui_desktop тип окна и меню", function()
+        test.it("прячет из меню запись с in_menu: false, не переставая её открывать", function()
+            -- Признак про меню, а не про запуск: просмотрщик файла или диалог
+            -- свойств открывается из другого окна и с рабочего стола.
+            local hidden = {id = "app:props", meta = {title = "Свойства", in_menu = false}}
+            local items = programs.menu({hidden, {id = "app:calc", meta = {title = "Калькулятор"}}})
+            test.eq(#items, 1)
+            test.eq(items[1].entry, "app:calc")
+
+            local item = programs.item(hidden)
+            test.not_nil(item, "скрытая запись остаётся программой")
+            test.eq(item.entry, "app:props")
+            test.is_false(item.in_menu)
+        end)
+
+        test.it("считает строку \"false\" отказом наравне с булевым", function()
+            -- Запись приезжает и из YAML, и из JSON. «Строка — это правда»
+            -- показала бы в меню ровно те окна, которые просили спрятать.
+            local items = programs.menu({{id = "app:props", meta = {title = "С", in_menu = "false"}}})
+            test.eq(#items, 0)
+        end)
+
+        test.it("считает неизвестный тип обычным окном и программу не прячет", function()
+            -- Тип объявляет кто-то другой; опечатка в одном поле не повод не
+            -- показать программу, которая в остальном исправна. Но и молчать
+            -- о ней нельзя, поэтому она уезжает предупреждением.
+            local records = {
+                {id = "app:weird", meta = {title = "Странное", window_type = "widget"}},
+                {id = "app:about", meta = {title = "О программе", window_type = "dialog"}},
+            }
+            local items, warnings = programs.menu(records)
+            test.eq(#items, 2, "неизвестный тип не повод спрятать программу")
+            local by_entry = {}
+            for _, item in ipairs(items) do by_entry[item.entry] = item.window_type end
+            test.eq(by_entry["app:weird"], "app")
+            test.eq(by_entry["app:about"], "dialog")
+            test.eq(#warnings, 1)
+            test.eq(warnings[1].entry, "app:weird")
+            test.eq(warnings[1].window_type, "widget")
+        end)
+
+        test.it("отдаёт диалог диалогом, а умолчание — обычным окном", function()
+            local dialog = programs.item({id = "app:about", meta = {window_type = "dialog"}})
+            test.eq(dialog.window_type, "dialog")
+            test.is_true(dialog.in_menu, "диалог в меню нужен: «О программе» — диалог")
+
+            local plain = programs.item({id = "app:calc", meta = {title = "Калькулятор"}})
+            test.eq(plain.window_type, programs.DEFAULT_TYPE)
+            test.eq(plain.title, "Калькулятор")
         end)
     end)
 end

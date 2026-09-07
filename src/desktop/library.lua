@@ -29,6 +29,16 @@ local logger = require("logger")
 local repo = require("repo")
 local apps = require("apps")
 
+-- Что запись реестра говорит о своей программе: тип окна и признак «показывать
+-- в меню». Отдельной библиотекой, потому что читают её и меню, и открытие, а
+-- умолчание, посчитанное в двух местах, однажды разойдётся.
+local programs = require("programs")
+
+-- Протокол «окно просит десктоп». Отсюда механика берёт ключ, которым имя
+-- композитора кладётся окну в контекст: разойдись ключ у отправителя и
+-- получателя, окно молча обращалось бы к штатному имени.
+local window_api = require("window_api")
+
 local WINDOW_HOST = "butschster.tui_desktop:workers"
 
 -- Окно — это любая запись процесса, которая умеет писать в свой tty-порт.
@@ -39,7 +49,7 @@ local PTY_WINDOW = "butschster.tui_desktop.desktop:window_pty"
 
 -- Каталог окон приложения: записи, помеченные этим meta.type, композитор
 -- находит сам и показывает в меню по alt+o.
-local WINDOW_META_TYPE = "tui_desktop.window"
+local WINDOW_META_TYPE = programs.WINDOW_META_TYPE
 local REPLY_TOPIC = "desktop.reply"
 
 local DEFAULT_COMMAND = "/bin/bash --noprofile --norc"
@@ -535,7 +545,31 @@ local function run(options: any)
         local argument = type(spec.args) == "string" and spec.args ~= ""
             and spec.args or command
 
+        -- Тип окна объявляет ЗАПИСЬ, а не тот, кто открывает: иначе одна и та
+        -- же программа была бы диалогом из меню и обычным окном с рабочего
+        -- стола. Значение из spec принимается только известное — его кладёт
+        -- оболочка, которая уже прочитала запись своим каталогом.
+        local record: any = registry.get(entry)
+        local window_type = programs.DEFAULT_TYPE
+        if record then
+            local declared, unknown = programs.item(record)
+            if declared then window_type = declared.window_type end
+            if unknown then
+                log:warn("неизвестный тип окна", {
+                    entry = entry, window_type = unknown, used = programs.DEFAULT_TYPE,
+                })
+            end
+        end
+        if type(spec.window_type) == "string" and programs.TYPES[spec.window_type] then
+            window_type = spec.window_type
+        end
+
+        -- Имя композитора едет окну в контексте процесса: под второй
+        -- оболочкой десктоп зарегистрирован своим именем, и окно, знающее
+        -- только константу, обращалось бы к чужому процессу — молча, потому
+        -- что `desktop.open` ответа не ждёт.
         local pid, perr = process.with_options({terminal = grant})
+            :with_context({[window_api.CONTEXT_KEY] = SERVICE_NAME})
             :spawn_monitored(entry, WINDOW_HOST, argument)
         if not pid then
             view:close()
@@ -546,6 +580,9 @@ local function run(options: any)
         local window = {
             id = "w" .. next_id,
             entry = entry,
+            -- Тема выбирает по нему состав кнопок заголовка; композитор
+            -- только несёт его от записи до темы.
+            window_type = window_type,
             title = type(spec.title) == "string" and spec.title ~= "" and spec.title
                 or (entry == PTY_WINDOW and command or entry),
             command = command,
@@ -719,6 +756,7 @@ local function run(options: any)
                     if item then
                         local window = open_window({
                             entry = item.entry, title = item.title, w = item.w, h = item.h,
+                            window_type = item.window_type,
                         })
                         if window then raise(window) end
                     end
@@ -779,6 +817,7 @@ local function run(options: any)
                     local opened = open_window({
                         entry = spot.entry, title = spot.title,
                         w = spot.w, h = spot.h, args = spot.args,
+                        window_type = spot.window_type,
                     })
                     if opened then raise(opened) end
                 end
@@ -847,21 +886,16 @@ local function run(options: any)
         local found, err = registry.find({["meta.type"] = WINDOW_META_TYPE})
         if err then return {}, tostring(err) end
         if type(found) ~= "table" then return {}, "реестр ответил не списком" end
-        local items = {}
-        for _, entry in ipairs(found :: {any}) do
-            local record = entry :: any
-            local meta = type(record.meta) == "table" and record.meta or {}
-            local id = record.id
-            if type(id) == "string" then
-                items[#items + 1] = {
-                    entry = id,
-                    title = type(meta.title) == "string" and meta.title or id,
-                    w = tonumber(meta.width),
-                    h = tonumber(meta.height),
-                }
-            end
+        -- Скрытые (`meta.in_menu: false`) сюда не попадают, неизвестный тип
+        -- считается обычным окном. Опечатка в типе не повод не показать
+        -- программу, но и молчать о ней нельзя — иначе она живёт вечно.
+        local items, warnings = programs.menu(found)
+        for _, warning in ipairs(warnings) do
+            log:warn("неизвестный тип окна", {
+                entry = warning.entry, window_type = warning.window_type,
+                used = programs.DEFAULT_TYPE,
+            })
         end
-        table.sort(items, function(left, right) return left.title < right.title end)
         return items, nil
     end
 
@@ -877,6 +911,7 @@ local function run(options: any)
             if item then
                 local window, err = open_window({
                     entry = item.entry, title = item.title, w = item.w, h = item.h,
+                    window_type = item.window_type,
                 })
                 if window then raise(window) end
                 menu = nil
@@ -929,6 +964,7 @@ local function run(options: any)
     local function describe(window)
         return {
             id = window.id, entry = window.entry, title = window.title, command = window.command,
+            window_type = window.window_type,
             x = window.x, y = window.y, width = window.w, height = window.h,
             ready = window.ready, minimized = window.minimized,
             maximized = window.maximized, closing = window.closing,
