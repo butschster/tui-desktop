@@ -1,19 +1,29 @@
--- Registry-shape test for the HTTP and UI surfaces. The harness does not call
--- its router or gateway, so the endpoint and web component are verified as
--- registry wiring: every entry exists and the cross-references line up.
+-- Проверки формы реестра. Харнесс не ходит в свой роутер, поэтому ручки
+-- проверяются как проводка: записи существуют и ссылаются друг на друга.
+--
+-- Здесь же закреплены два инварианта, нарушение которых снаружи выглядит не
+-- как ошибка, а как странность: терминальный хост обязан глушить лог, а
+-- командный канал обязан НЕ иметь права порождать процессы.
 local test = require("test")
 local registry = require("registry")
 
-local NS = "acme.starter"
-local HANDLER_ID = "acme.starter.api:get_status"
-local ENDPOINT_ID = "acme.starter.api:get_status.endpoint"
-local VIEW_ID = "acme.starter:starter_view"
-local NAV_ID = "acme.starter:nav_item"
-local STATIC_ID = "acme.starter:ui_static"
-local FS_ID = "acme.starter:ui_fs"
-local POLICY_ID = "acme.starter.security:starter_endpoint_access"
-local BLOCK_ID = "acme.starter.blocks:block.write_log"
-local BLOCK_FN_ID = "acme.starter.blocks:block_write_log"
+local NS = "butschster.tui_desktop"
+local TERMINAL_ID = "butschster.tui_desktop:terminal"
+local WORKERS_ID = "butschster.tui_desktop:workers"
+local EXEC_ID = "butschster.tui_desktop:exec"
+local DESKTOP_ID = "butschster.tui_desktop.desktop:desktop"
+local CHROME_ID = "butschster.tui_desktop.desktop:chrome"
+local WINDOW_ID = "butschster.tui_desktop.desktop:window_pty"
+local CONTROL_ID = "butschster.tui_desktop.api:control"
+local RUNTIME_POLICY_ID = "butschster.tui_desktop.security:desktop_runtime"
+local CHANNEL_POLICY_ID = "butschster.tui_desktop.security:desktop_command_channel"
+local ACCESS_POLICY_ID = "butschster.tui_desktop.security:desktop_endpoint_access"
+
+local ENDPOINTS = {
+    {id = "butschster.tui_desktop.api:list_windows", method = "GET", path = "/tui-desktop/windows"},
+    {id = "butschster.tui_desktop.api:open_window", method = "POST", path = "/tui-desktop/windows"},
+    {id = "butschster.tui_desktop.api:window_action", method = "POST", path = "/tui-desktop/windows/{id}/{action}"},
+}
 
 local function get(id)
     local entry, err = registry.get(id)
@@ -33,71 +43,109 @@ local function data_of(entry)
     return entry
 end
 
--- Entry references are written relative or namespace-qualified; compare fully
--- qualified.
 local function qualify(ref, ns)
     if type(ref) ~= "string" then return ref end
     if ref:find(":", 1, true) then return ref end
     return ns .. ":" .. ref
 end
 
+local function actions_of(policy_entry)
+    local policy = data_of(policy_entry).policy or {}
+    local actions = policy.actions
+    if type(actions) == "string" then return {actions} end
+    return type(actions) == "table" and actions or {}
+end
+
+local function has(list, needle)
+    for _, item in ipairs(list) do
+        if item == needle then return true end
+    end
+    return false
+end
+
 local function define_tests()
-    test.describe("acme.starter surface wiring", function()
-        test.it("pairs the status endpoint with its handler on the router token", function()
-            get(HANDLER_ID)
-            local ep = data_of(get(ENDPOINT_ID))
-            test.eq(qualify(ep.func, "acme.starter.api"), HANDLER_ID)
-            test.eq(ep.method, "GET")
-            test.eq(ep.path, "/starter/status")
-            test.eq(meta_of(get(ENDPOINT_ID)).router, "app:api")
+    test.describe("butschster.tui_desktop hosts", function()
+        test.it("глушит лог на терминальном хосте", function()
+            -- Без этого строка лога рантайма разъезжает кадр насовсем:
+            -- диффер поверхности считает себя единственным писателем.
+            local terminal = data_of(get(TERMINAL_ID))
+            test.eq(terminal.hide_logs, true)
         end)
 
-        test.it("declares a view served by the module's own static mount", function()
-            local view = meta_of(get(VIEW_ID))
-            test.eq(view.type, "view.component")
-            test.eq(view.tag_name, "acme-starter")
-            test.eq(view.entry_point, "index.js")
-            test.eq(view.announced, true)
-            test.eq(view.auto_register, true)
-
-            local static = get(STATIC_ID)
-            test.eq(data_of(static).path, "/" .. view.base_path)
-            test.eq(qualify(data_of(static).fs, NS), FS_ID)
-            get(FS_ID)
+        test.it("держит отдельный хост для окон", function()
+            local workers = data_of(get(WORKERS_ID))
+            test.not_nil(workers.host, "process.host must declare its host block")
+            test.is_true((workers.host.max_processes or 0) > 1,
+                "хост окон должен вмещать больше одного окна")
         end)
 
-        test.it("mounts the view in the app nav by tag", function()
-            local nav = meta_of(get(NAV_ID))
-            test.eq(nav.type, "ui.nav_item")
-            test.eq(nav.path, "/starter")
-            test.eq(nav.render, "component")
-            test.eq(nav.component_tag, meta_of(get(VIEW_ID)).tag_name)
+        test.it("объявляет исполнителя для программ в окнах", function()
+            get(EXEC_ID)
+        end)
+    end)
+
+    test.describe("butschster.tui_desktop processes", function()
+        test.it("отдаёт композитор командой с собственным актором", function()
+            local entry = get(DESKTOP_ID)
+            local command = meta_of(entry).command or {}
+            test.eq(command.name, "desktop")
+            test.not_nil(command.security, "команда обязана нести свой контекст безопасности")
+
+            local data = data_of(entry)
+            test.eq(data.method, "main")
+            test.eq(qualify((data.imports or {}).chrome, "butschster.tui_desktop.desktop"), CHROME_ID)
+            test.is_true(has(data.modules or {}, "tty"), "композитору нужен модуль tty")
+            test.is_true(has(data.modules or {}, "process"), "композитору нужен модуль process")
         end)
 
-        test.it("contributes the write-log Block backed by its implementation function", function()
-            local block = get(BLOCK_ID)
-            test.eq(meta_of(block).type, "kickside.block")
-            local decl = data_of(block).block
-            test.not_nil(decl, "block declaration must live in data.block")
-            test.eq(decl.api_version, "kickside.block/v1")
-            test.eq(decl.execution.kind, "function")
-            test.eq(decl.execution.function_id, BLOCK_FN_ID)
-            test.not_nil(decl.input, "block must declare an input schema")
-            test.not_nil(decl.output, "block must declare an output schema")
-            test.not_nil(decl.error, "a failed port requires an error schema")
-            get(BLOCK_FN_ID)
+        test.it("даёт окну exec и tty, но не process", function()
+            -- Окно ничего не порождает: оно только отдаёт свой порт программе.
+            local data = data_of(get(WINDOW_ID))
+            test.is_true(has(data.modules or {}, "exec"), "окну нужен модуль exec")
+            test.is_true(has(data.modules or {}, "tty"), "окну нужен модуль tty")
+        end)
+    end)
+
+    test.describe("butschster.tui_desktop command channel", function()
+        test.it("сводит каждую ручку с её обработчиком на роутере приложения", function()
+            for _, expected in ipairs(ENDPOINTS) do
+                get(expected.id)
+                local endpoint = get(expected.id .. ".endpoint")
+                local data = data_of(endpoint)
+                test.eq(qualify(data.func, "butschster.tui_desktop.api"), expected.id)
+                test.eq(data.method, expected.method)
+                test.eq(data.path, expected.path)
+                test.eq(meta_of(endpoint).router, "app:api")
+            end
+            get(CONTROL_ID)
         end)
 
-        test.it("gates the api namespace behind the injectable access policy", function()
-            local policy = data_of(get(POLICY_ID))
+        test.it("не даёт командному каналу порождать процессы", function()
+            -- Ручка обязана уметь только найти композитор и заговорить с ним.
+            -- Право spawn здесь означало бы, что HTTP-запрос запускает
+            -- программы сам, минуя единственное место, которое их считает.
+            local actions = actions_of(get(CHANNEL_POLICY_ID))
+            test.is_true(has(actions, "process.send"), "каналу нужно право послать команду")
+            test.is_true(has(actions, "process.registry"), "каналу нужно найти композитор по имени")
+            test.is_false(has(actions, "process.spawn"), "у канала не должно быть права порождать процессы")
+            test.is_false(has(actions, "exec.run"), "у канала не должно быть права запускать программы")
+        end)
+
+        test.it("даёт композитору ровно то, что нужно для окон", function()
+            local actions = actions_of(get(RUNTIME_POLICY_ID))
+            for _, needed in ipairs({"process.spawn.monitored", "process.terminate",
+                "process.registry.register", "exec.get", "exec.run"}) do
+                test.is_true(has(actions, needed), "композитору нужно право " .. needed)
+            end
+        end)
+
+        test.it("закрывает ручки политикой, которую внедряет приложение", function()
+            local policy = data_of(get(ACCESS_POLICY_ID))
             local resources = policy.policy and policy.policy.resources
             test.not_nil(resources, "policy must list resources")
-            if type(resources) == "string" then resources = { resources } end
-            local covered = false
-            for _, r in ipairs(resources) do
-                if r == "acme.starter.api:*" then covered = true end
-            end
-            test.is_true(covered, "policy must cover acme.starter.api:*")
+            if type(resources) == "string" then resources = {resources} end
+            test.is_true(has(resources, "butschster.tui_desktop.api:*"),
+                "policy must cover butschster.tui_desktop.api:*")
         end)
     end)
 end

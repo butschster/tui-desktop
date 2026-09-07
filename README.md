@@ -1,241 +1,150 @@
-# Kickside Module Template
+# butschster/tui-desktop
 
-A template for an independently versioned Kickside module. It includes a
-registry namespace, typed automation port,
-contract binding, persistence layer, SQLite/PostgreSQL migration, authenticated
-API, module-owned web component, standalone test harness, release checks, and
-the Kickside development handbook.
+Оконный менеджер для терминала на рантайме Wippy.
 
-The module builds and tests without a Kickside source checkout. Wippy and
-Node.js are required. Publishing requires a Wippy Hub account.
+Один процесс-композитор владеет физическим экраном и рисует окна; каждое окно —
+отдельный процесс, который пишет в собственный viewport через обычный `tty` и
+считает, что владеет терминалом целиком. Ни одно окно не знает, что оно окно:
+поэтому в окне работает настоящий `bash`, `htop`, редактор или Claude Code —
+без единой строчки, написанной под этот десктоп.
 
-## Create a repository
+Тем же экраном одновременно управляет агент: у модуля есть HTTP-канал, которым
+можно открыть окно, переставить его, напечатать в него и **прочитать его экран**.
 
-Create a repository from this GitHub template:
-
-```bash
-gh repo create my-company/invoices \
-  --template wippyai/kickside-module --private --clone
-cd invoices
-
-make init \
-  ORG=my-company \
-  MODULE_NAME=invoices \
-  TITLE="Invoices" \
-  GITHUB_OWNER=my-company
-
-make verify
+```
+физический TTY → surface композитора → viewport → процесс окна → PTY-прокси → программа
 ```
 
-The initializer changes package identity, root namespace, custom-element tag,
-route, SQL names, test identity, environment prefix, repository metadata, and
-generated bundle metadata together. Re-running it with the same values is a
-no-op; trying to change an initialized checkout fails instead of partially
-renaming it.
+## Что нужно
 
-Without GitHub CLI, clone the public template, replace its Git remote with your
-own repository, then run the same `make init` command.
+- Wippy **0.3.40a** или новее — модуль `tty` появился там (#631, фиксы в #637).
+- Приложение Kickside, дающее `app:api` (роутер с аутентификацией).
 
-Install the current Wippy CLI from [Wippy releases](https://hub.wippy.ai/releases)
-and use Node.js 22 or newer. CI verifies the template against the newest
-published CLI on every run (`WIPPY_VERSION: latest` in `.github/workflows`);
-if `make test` ever reports "No tests found", upgrade the local CLI and re-run
-`make setup` so the harness resolves a current `wippy/test`. Confirm both
-tools before starting:
+## Запуск
 
 ```bash
-wippy version
-node --version
+wippy run --host butschster.tui_desktop:terminal desktop
 ```
 
-## Verification
+`--host` здесь обязателен, и это не придирка: автодетект терминального хоста в
+CLI — просто подсчёт записей `terminal.host` во всём реестре, а этот модуль
+приносит вторую. С момента установки **каждая** команда приложения требует
+явного `--host`; соседние команды выбирают хост приложения
+(`--host wippy.terminal:host`).
 
-`make verify` runs:
+Собственный хост нужен ради `hide_logs`. Диффер поверхности считает себя
+единственным писателем в терминал, поэтому строка лога разъезжает кадр
+насовсем — неизменившиеся строки не перерисовываются. Забрать под это хост
+приложения нельзя: на нём живут фоновые процессы, и приложение лишилось бы лога.
 
-- resolves the module's and the test harness's public Wippy dependencies to
-  their current releases (`wippy update` in both; locks are generated, never
-  committed);
-- installs the UI from `package-lock.json`;
-- validates identity consistency, documentation links, dependency ranges,
-  generated files, frontend registry metadata, and secret hygiene;
-- tests the initializer itself in a disposable copy;
-- runs Wippy lint;
-- runs strict Vue/TypeScript checking and the production web-component build;
-- boots the standalone harness on in-memory SQLite and runs every test.
+### Клавиши
 
-PostgreSQL is a separate explicit matrix:
+- `alt+n` — новое окно с интерактивным bash
+- `alt+w` — закрыть текущее окно
+- `alt+m` — свернуть текущее окно
+- `alt+tab` — следующее окно
+- `alt+1`…`alt+9` — окно по номеру из полосы сверху
+- `ctrl+q` — закрыть все окна и выйти
+
+Всё остальное уходит внутрь окна. Акселераторы держатся на `alt` нарочно:
+`ctrl` и `tab` слишком часто нужны самим программам, и красть их — значит
+ломать редактор внутри.
+
+Мышью можно перетащить окно за заголовок, потянуть за правый нижний угол,
+нажать `[-]`, `[□]`, `[×]` и переключиться по вкладке сверху. Включённая мышь
+забирает у терминала обычное выделение текста — для копирования держите Shift.
+
+## Командный канал
+
+Все ручки живут за аутентифицированным роутером приложения.
+
+- `GET /tui-desktop/windows` — открытые окна, фокус, размер экрана
+- `POST /tui-desktop/windows` — открыть окно: `command`, `title`, `x`, `y`, `w`, `h`
+- `POST /tui-desktop/windows/{id}/type` — напечатать `text`, при `enter: true` с переводом строки
+- `POST /tui-desktop/windows/{id}/key` — одна клавиша: `key`, `ctrl`, `alt`, `shift`
+- `POST /tui-desktop/windows/{id}/screen` — содержимое окна строками
+- `POST /tui-desktop/windows/{id}/move` — переставить: `x`, `y`
+- `POST /tui-desktop/windows/{id}/resize` — размер: `w`, `h`
+- `POST /tui-desktop/windows/{id}/focus` — поднять наверх
+- `POST /tui-desktop/windows/{id}/minimize` — свернуть или развернуть: `value`
+- `POST /tui-desktop/windows/{id}/close` — закрыть
 
 ```bash
-make postgres-up
-make test-pg
-make postgres-down
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"сборка","command":"/bin/bash --noprofile --norc"}' \
+  http://localhost:8099/api/tui-desktop/windows
+
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"text":"make test","enter":true}' \
+  http://localhost:8099/api/tui-desktop/windows/w1/type
+
+curl -X POST -H 'Content-Type: application/json' -d '{}' \
+  http://localhost:8099/api/tui-desktop/windows/w1/screen
 ```
 
-The Docker database is test-only and disposable. Production credentials never
-belong in this repository.
+Команды без ответа не бывает: молчание композитора невозможно отличить от
+применённой команды, и вызывающий поверил бы в успех. Незапущенный десктоп и
+неотвечающий десктоп — тоже разные ответы.
 
-## Publish to the Wippy Hub
+## Устройство
 
-Publishing requires a Wippy account with access to the organization selected
-by `ORG`:
+- `src/desktop/desktop.lua` — композитор: список окон в z-порядке, ввод, команды, отрисовка
+- `src/desktop/chrome.lua` — рамки, заголовки, кнопки, полоса окон; чистые строки без вызовов в рантайм
+- `src/desktop/window_pty.lua` — окно: отдаёт свой порт настоящей программе под PTY
+- `src/api/` — командный канал и его политика
+- `src/security/` — три политики: композитору, каналу, доступу к ручкам
+
+Права разделены нарочно. Композитору нужно порождать процессы и запускать
+программы; командному каналу — только найти композитор и заговорить с ним.
+Право `spawn` у ручки означало бы, что HTTP-запрос запускает программы мимо
+единственного места, которое их считает.
+
+## Разработка
 
 ```bash
-wippy auth login
-wippy auth status
+make setup     # разрешить зависимости модуля и харнесса
+make lint      # wippy lint
+make test      # автономный харнесс, реестровые проверки
+make verify    # всё вместе
+```
+
+Харнесс в `test/` подменяет модуль рабочей копией из `..`, поэтому он же
+поднимает десктоп без всякого приложения:
+
+```bash
+cd test && wippy run --host butschster.tui_desktop:terminal desktop
+```
+
+Полноэкранную программу нельзя проверить кодом возврата: без настоящего
+терминала она не запускается вовсе, а запущенная пишет не строки, а поток с
+абсолютным позиционированием. Пробник [`tools/tui-probe.py`](tools/tui-probe.py)
+даёт PTY заданного размера, печатает по сценарию и разбирает поток в текстовую
+сетку — снимок экрана и есть доказательство.
+
+```bash
+cd test && python3 ../tools/tui-probe.py --cols 100 --rows 26 --boot 60 \
+    --send $'\033n' --send 'echo ok' --send-key enter --expect 'ok' \
+    -- wippy run --host butschster.tui_desktop:terminal desktop
+```
+
+### Две ловушки, стоившие здесь времени
+
+**Хвостовой вызов.** В go-lua v1.5.18 вызов yield-функции, стоящий последним
+как `return f(...)`, не выполняется вовсе — молча, за 0 мс, с пустым
+результатом. Такую форму имеют все вызовы этого стека: `tty.start`,
+`surface:present`, `viewport:send`, `session:send`. Поэтому они обёрнуты в
+`assert(...)`: это не стиль, это обход.
+
+**Экран без размера.** Запуск не из терминала (скрипт, CI, пайп) отвечает на
+`screen_size()` нулями, и холст такую ширину отвергает — композитор падал на
+первой же строке. Геометрия поэтому проверяется, а не берётся на веру.
+
+## Публикация
+
+```bash
 make release-check
-make publish
+make publish            # приватно; VIS=public — осознанно
 ```
 
-`make publish` creates a private plugin by default and embeds the built UI.
-To publish publicly:
-
-```bash
-make publish VIS=public
-```
-
-The source manifest does not pin a release version. The publisher selects the
-next valid version; published releases remain immutable. Runtime dependencies
-use compatibility constraints, while `wippy.lock` files carry exact resolved
-artifacts for reproducible execution.
-
-After publishing, install the module from Kickside's System → Hub page. The
-host infers application-owned requirements; users are asked for
-deployment-specific choices.
-
-## Mount the module in a Kickside host
-
-Bootstrap Kickside in a separate directory (first boot runs clean, without
-the overlay, so the resolved graph and admin account exist):
-
-```bash
-mkdir ../kickside-host
-cd ../kickside-host
-wippy run kickside/kickside -c \
-  --profile bootstrap_admin --profile local --profile sqlite \
-  --set vars.local_port=8090 \
-  --set vars.local_public_api_url=http://localhost:8090 \
-  --set vars.bootstrap_admin_email=admin@example.com \
-  --set vars.bootstrap_admin_password=change-me
-```
-
-Stop it once it settles, then create the untracked
-`../kickside-host/.wippy.workspace.yaml`:
-
-```yaml
-version: "1.0"
-workspace:
-  replacements:
-    my-company/invoices: ../invoices
-override:
-  "app.env:defaults:values.GOV_MANAGED_NAMESPACES": "my_company.invoices"
-  "my_company.invoices.security:user_security_scope:default": app.security:user
-```
-
-The `user_security_scope` line binds the module's security requirement to the
-application's authenticated-user group; without it every module endpoint
-returns 403. Restart the host from its directory with the overlay (bare
-`wippy run` reads the locked graph; keep the same profiles and vars):
-
-```bash
-wippy run --config .wippy.workspace.yaml -c \
-  --profile bootstrap_admin --profile local --profile sqlite \
-  --set vars.local_port=8090 \
-  --set vars.local_public_api_url=http://localhost:8090 \
-  --set vars.bootstrap_admin_email=admin@example.com \
-  --set vars.bootstrap_admin_password=change-me
-```
-
-The full loop, including Keeper-driven reactive development, is documented in
-[The Dev Loop](docs/kickside-development/14-dev-loop.md).
-
-The host stays source-free: its lock and vendor packs belong to the deployment;
-your module checkout is the only local source. Never add local replacements to
-`wippy.lock` and never point Keeper's application filesystem sync at a
-conventional module `src/` tree.
-
-## Included vertical slice
-
-The executable example is `acme/starter` until initialized:
-
-- `acme.starter:definition` is the authoritative root `ns.definition`.
-- `acme.starter:log` is a typed automation destination port.
-- `acme.starter:log_sink` binds the shared `kickside.data:writable` contract.
-- `acme.starter.sink:write` validates and persists one acknowledged write.
-- `acme.starter.persist:repo` owns SQL access.
-- `acme.starter.migrations:01_create_log_entries` supports SQLite and Postgres.
-- `acme.starter.api:get_status.endpoint` exposes authenticated module status.
-- `acme.starter:starter_view` publishes an announced, auto-registered Wippy
-  web component served by the module's own embedded filesystem.
-- `acme.starter.blocks:block.write_log` contributes the capability to the
-  headless Block catalog (`kickside.block/v1`) so Automations, Workflows, and
-  agents can compose it; `block_write_log` is its function implementation and
-  runs the same persistence path as the sink.
-- `test/` supplies an isolated host and behavioral/wiring suites.
-
-Package identity (`organization/module`), registry namespace
-(`namespace:name`), and component instance IDs are different identities. Do
-not derive one from another. The root `ns.definition` declares the namespace.
-
-## Capability coverage
-
-- The source includes a `contract.binding` sink implementing
-  `kickside.data:writable`.
-- The source includes a destination `kickside.automation.port` that addresses
-  that sink.
-- Durable events, thread append calls, projections, and realtime wakeups are
-  documented in [Threads, Events, And Projections](docs/kickside-development/03-threads-events-projections.md).
-- Block declarations, schemas, lowering, output ports, nested Flows, waits,
-  signals, and the optional visual Workflow layer are documented in
-  [Blocks, Flows, Workflows, And Ports](docs/kickside-development/18-blocks-flows-workflows.md).
-- Contract definitions, bindings, sources, destinations, pullable stores, and
-  writable sinks are documented in
-  [Contracts And Ports](docs/kickside-development/02-contracts-and-ports.md).
-
-The template does not add event, Block, Dataflow, or visual Workflow
-dependencies until the module uses those contracts.
-
-## Repository map
-
-```text
-AGENTS.md                     development instructions
-.kickside-module.json         initializer state and module identity
-scripts/                      initializer and deterministic validation
-wippy.yaml                    publish manifest; no fixed release version
-src/                          registry declarations and Lua implementation
-ui/                           source for the Wippy web component
-static/                       generated, committed publish artifact
-test/                         standalone Wippy harness; lock generated by setup
-compose.test.yaml             disposable PostgreSQL matrix
-docs/kickside-development/    Kickside developer Wiki snapshot
-.github/workflows/verify.yml  Linux SQLite + PostgreSQL + frontend CI
-```
-
-Start with [AGENTS.md](AGENTS.md), even when you are not using an agent. The
-handbook begins at
-[Developer Handbook](docs/kickside-development/developer-handbook.md); frontend
-work begins at
-[Frontend Handbook](docs/kickside-development/frontend/frontend-handbook.md).
-
-## Rules
-
-- Never commit credentials, `.env`, `.wippy/`, a root `wippy.lock`, module
-  packs, `node_modules`, or source maps.
-- Never put an exact resolved version in an `ns.dependency`; exact versions
-  belong in lock files.
-- Never infer a registry namespace from a package name. Read `ns.definition`.
-- Never add compatibility fallbacks or duplicate ownership to hide a broken
-  contract.
-- Never manufacture actor scope. Execution inherits the calling actor.
-- Never synchronously drive thread projections from a read endpoint.
-- Build UI from `ui/src`; do not hand-edit `static/`.
-- Use Wippy theme tokens and host APIs; no hardcoded deployment paths, raw
-  proxy wires, fake `--p-*` colors, or unowned host styling.
-- A change is complete only after SQLite, PostgreSQL, frontend, package, and
-  secret checks pass in proportion to what changed.
-
-## Documentation provenance
-
-The bundled handbook is a public, offline-readable snapshot of the published
-[Kickside Wiki](https://hub.wippy.ai/kickside/kickside/wiki/docs/kickside-development/developer-handbook.md).
-The template repository is linked from that Wiki so agents can move between
-the executable example and the current published guidance.
+Смотрите [AGENTS.md](AGENTS.md) — контракт разработки и релиза,
+[CONTRIBUTING.md](CONTRIBUTING.md) и [SECURITY.md](SECURITY.md).

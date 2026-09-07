@@ -1,28 +1,63 @@
 version: "1.0"
-namespace: acme.starter.security
+namespace: butschster.tui_desktop.security
 
-# Module-owned access policy for the starter endpoints. The grant travels with
-# the module; the role group that receives it is injected by the
-# user_security_scope requirement, keeping the module app-agnostic.
+# Права разделены на три, а не слиты в одну «всё можно»: композитору нужно
+# порождать процессы и запускать программы, командному каналу — только
+# найти композитор и заговорить с ним, а доступ к ручкам выдаёт приложение.
 
 entries:
-  # acme.starter.security:starter_endpoint_access
-  - name: starter_endpoint_access
+  # butschster.tui_desktop.security:desktop_runtime
+  - name: desktop_runtime
     kind: security.policy
     meta:
-      comment: Authenticated users may reach the starter product endpoints.
+      comment: Права композитора и окон — порождать процессы с грантом на viewport, гасить их и запускать программы под PTY.
+    policy:
+      actions:
+        - process.context
+        - process.spawn
+        - process.spawn.monitored
+        - process.monitor
+        - process.host
+        - process.terminate
+        - process.send
+        - process.registry
+        - process.registry.register
+        - process.registry.unregister
+        - exec.get
+        - exec.run
+      resources: "*"
+      effect: allow
+
+  # butschster.tui_desktop.security:desktop_command_channel
+  - name: desktop_command_channel
+    kind: security.policy
+    meta:
+      comment: Права ручек командного канала — найти композитор по имени и послать ему команду. Ни порождения процессов, ни запуска программ здесь нет намеренно.
+    policy:
+      actions:
+        - process.context
+        - process.registry
+        - process.send
+      resources: "*"
+      effect: allow
+
+  # butschster.tui_desktop.security:desktop_endpoint_access
+  - name: desktop_endpoint_access
+    kind: security.policy
+    meta:
+      comment: Аутентифицированные пользователи приложения могут обращаться к ручкам десктопа.
     groups: []
     policy:
       resources:
-        - acme.starter.api:*
+        - butschster.tui_desktop.api:*
       actions: access
       effect: allow
 
-  # acme.starter.security:user_security_scope
+  # butschster.tui_desktop.security:user_security_scope
   - name: user_security_scope
     kind: ns.requirement
     meta:
-      comment: Application security group that may reach the starter endpoints.
+      comment: Группа безопасности приложения, которой открыт доступ к ручкам десктопа.
     targets:
-      - entry: acme.starter.security:starter_endpoint_access
+      - entry: butschster.tui_desktop.security:desktop_endpoint_access
         path: ".groups +="

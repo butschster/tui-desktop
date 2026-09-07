@@ -112,7 +112,7 @@ searching registry declarations.
 - Dataflow, agent, Block, and nested execution inherit the calling actor.
   Never inject or synthesize a user scope to choose an execution identity.
 - A module may accept a host role-group requirement only to append that group
-  to the module's own endpoint policy, as this starter does.
+  to the module's own endpoint policy, as this tui-desktop does.
 - Public endpoints require an intentional public router and explicit threat
   review. Product endpoints use the authenticated router and endpoint policy.
 - Never log tokens, credentials, private component context, authorization

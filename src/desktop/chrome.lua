@@ -1,0 +1,158 @@
+-- Хром окна: рамка, заголовок, кнопки, таббар.
+--
+-- Здесь нет ни одного вызова, который уходит в рантайм: только строки и
+-- арифметика. Поэтому файл — библиотека, а не процесс, и его можно звать
+-- из любой отрисовки.
+--
+-- Правило, которое стоит держать в голове при правках: рамка и содержимое
+-- окна кладутся на холст РАЗДЕЛЬНО. Попытка слить их в одну строку означает
+-- решения об обрезке, которые принять уже нельзя — содержимое приходит
+-- готовыми строками от чужого процесса.
+
+local tty = require("tty")
+
+local chrome = {}
+
+-- Кнопки в правом верхнем углу рамки. Порядок и ширина заданы здесь один
+-- раз: и рисование, и попадание мыши считают по этой же таблице, иначе
+-- кнопка «закрыть» однажды окажется на один символ левее, чем выглядит.
+chrome.BUTTONS = {
+    {id = "minimize", label = "[-]"},
+    {id = "maximize", label = "[□]"},
+    {id = "close",    label = "[×]"},
+}
+chrome.BUTTONS_WIDTH = 9  -- три кнопки по три ячейки
+
+local BORDER = {
+    top_left = "╭", top_right = "╮",
+    bottom_left = "╰", bottom_right = "╯",
+    horizontal = "─", vertical = "│",
+}
+
+local styles = {
+    focused    = tty.style():foreground("81"),
+    unfocused  = tty.style():foreground("240"),
+    title      = tty.style():foreground("252"),
+    title_dim  = tty.style():foreground("244"),
+    button     = tty.style():foreground("245"),
+    tab_active = tty.style():bold():foreground("#000000"):background("81"),
+    tab_idle   = tty.style():foreground("250"):background("238"),
+    bar        = tty.style():foreground("250"):background("236"),
+    hint       = tty.style():faint(),
+}
+
+-- clip(text, cells) — обрезать по ЯЧЕЙКАМ, а не по байтам.
+--
+-- `#строка` считает байты и не видит управляющих последовательностей: на
+-- кириллице и на стилизованном тексте он врёт вдвое и втрое.
+local function clip(text, cells: any)
+    local width = math.tointeger(cells) or 0
+    if width <= 0 then return "" end
+    return tty.text.truncate(text, width)
+end
+
+chrome.clip = clip
+
+-- Заголовочная строка окна: рамка, имя, кнопки.
+--
+-- Возвращает готовую строку ровно в `width` ячеек.
+local function title_row(title, width: any, focused)
+    if width <= 0 then return "" end
+    if width == 1 then return BORDER.horizontal end
+    if width == 2 then return BORDER.horizontal .. BORDER.horizontal end
+
+    local border_style = focused and styles.focused or styles.unfocused
+    local name_style = focused and styles.title or styles.title_dim
+
+    local buttons = width >= chrome.BUTTONS_WIDTH + 6 and chrome.BUTTONS_WIDTH or 0
+    -- Свободно под имя: вся ширина минус углы, минус кнопки, минус пробелы
+    -- вокруг имени и минимум один сегмент рамки слева.
+    local room = width - 2 - buttons - 4
+    local name = room > 0 and clip(title or "", room) or ""
+
+    local parts = {border_style:render(BORDER.top_left .. BORDER.horizontal)}
+    local used = 2
+
+    if name ~= "" then
+        parts[#parts + 1] = name_style:render(" " .. name .. " ")
+        used = used + tty.text.width(name) + 2
+    end
+
+    local tail = width - used - buttons - 1
+    if tail > 0 then
+        parts[#parts + 1] = border_style:render(string.rep(BORDER.horizontal, tail))
+    end
+
+    if buttons > 0 then
+        local labels = {}
+        for _, button in ipairs(chrome.BUTTONS) do labels[#labels + 1] = button.label end
+        parts[#parts + 1] = styles.button:render(table.concat(labels))
+    end
+
+    parts[#parts + 1] = border_style:render(BORDER.top_right)
+    return table.concat(parts)
+end
+
+chrome.title_row = title_row
+
+-- Нарисовать окно целиком: рамка, заголовок, содержимое.
+--
+-- `rows` — массив строк, как его отдаёт viewport:snapshot(). Он общий и
+-- неизменяемый, поэтому кладётся как есть: put_rows сам обрежет по ширине.
+function chrome.window(canvas, window, focused)
+    local x, y, w, h = window.x, window.y, window.w, window.h
+    if w < 2 or h < 2 then return end
+
+    local border_style = focused and styles.focused or styles.unfocused
+    local span = w - 2
+
+    canvas:put(x, y, title_row(window.title, w, focused), w)
+
+    local middle = border_style:render(BORDER.vertical)
+        .. string.rep(" ", span)
+        .. border_style:render(BORDER.vertical)
+    for row = 1, h - 2 do
+        canvas:put(x, y + row, middle, w)
+    end
+
+    canvas:put(x, y + h - 1, border_style:render(
+        BORDER.bottom_left .. string.rep(BORDER.horizontal, span) .. BORDER.bottom_right), w)
+
+    if window.rows then
+        canvas:put_rows(x + 1, y + 1, window.rows, w - 2)
+    end
+end
+
+-- Полоса окон сверху. Возвращает ещё и разметку попаданий, чтобы клик по
+-- вкладке не пришлось считать второй раз по другой формуле.
+function chrome.tabbar(canvas, width: any, windows, focused_id)
+    local segments, column = {}, 1
+    local parts = {}
+
+    for index, window in ipairs(windows) do
+        local label = " " .. index .. " " .. clip(window.title or "?", 18) .. " "
+        local cells = tty.text.width(label)
+        if column + cells > width then break end
+        local style = window.id == focused_id and styles.tab_active or styles.tab_idle
+        parts[#parts + 1] = style:render(label)
+        segments[#segments + 1] = {id = window.id, from = column, to = column + cells - 1}
+        column = column + cells
+    end
+
+    canvas:put(1, 1, styles.bar:width(width):render(table.concat(parts)), width)
+    return segments
+end
+
+function chrome.statusbar(canvas, width: any, height: any, text)
+    canvas:put(1, height, styles.bar:width(width):render(clip(" " .. text .. " ", width)), width)
+end
+
+function chrome.empty_desktop(canvas, width: any, height: any, text)
+    local room = width - 4
+    local message = clip(text, room < 1 and 1 or room)
+    local column = (width - tty.text.width(message)) // 2
+    canvas:put(column < 1 and 1 or column, height // 2,
+        styles.hint:render(message), width)
+end
+
+return chrome

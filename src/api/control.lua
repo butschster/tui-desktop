@@ -1,0 +1,85 @@
+-- Командный канал к композитору.
+--
+-- Композитор — обычный процесс, зарегистрированный под именем. HTTP-вызов
+-- находит его по имени, шлёт сообщение и ждёт ответа на собственный inbox:
+-- вызов способности сам исполняется процессом, что и делает ожидание
+-- возможным.
+--
+-- Отсюда важное следствие для читателя ответа: «десктоп не отвечает» и
+-- «десктоп не запущен» — разные вещи, и различать их обязан канал, иначе
+-- незапущенный десктоп выглядит как сломанный.
+
+local channel = require("channel")
+local process = require("process")
+local time = require("time")
+
+local SERVICE_NAME = "butschster.tui_desktop.desktop"
+local REPLY_TOPIC = "desktop.reply"
+local BUDGET = "5s"
+
+local control = {}
+
+-- Сообщение приезжает обёрнутым: payload — userdata, внутри бывает ещё и
+-- массив из одного элемента. Поле, прочитанное напрямую, окажется nil без
+-- всякой ошибки.
+local function unwrap(value)
+    if type(value) == "userdata" then
+        local ok, decoded = pcall(function() return value:data() end)
+        if ok and type(decoded) == "table" then return decoded end
+        return {}
+    end
+    if type(value) ~= "table" then return {} end
+    if value[1] ~= nil and #value > 0 then return unwrap(value[1]) end
+    return value
+end
+
+control.unwrap = unwrap
+
+local function await(budget)
+    local inbox = process.inbox()
+    local expiry = time.after(budget)
+
+    while true do
+        local result = channel.select({inbox:case_receive(), expiry:case_receive()})
+        if result.channel == expiry then
+            return nil, "десктоп не ответил за " .. budget
+        end
+        if not result.ok then
+            return nil, "inbox вызова закрылся, пока ждали десктоп"
+        end
+        local message = result.value
+        if message:topic() == REPLY_TOPIC then
+            return unwrap(message:payload()), nil
+        end
+        -- Чужое сообщение не съедаем: оно адресовано не нам.
+    end
+end
+
+-- call(topic, body) -> (ответ, nil) | (nil, причина)
+--
+-- Команды без ответа не бывает: молчание композитора невозможно отличить
+-- от применённой команды, и вызывающий поверил бы в успех.
+function control.call(topic, body)
+    local pid, lerr = process.registry.lookup(SERVICE_NAME)
+    if not pid then
+        return nil, "десктоп не запущен (" .. tostring(lerr)
+            .. "): запустите `wippy run --host butschster.tui_desktop:terminal desktop`"
+    end
+
+    body = type(body) == "table" and body or {}
+    body.reply_to = process.pid()
+
+    local sent, serr = process.send(pid, topic, body)
+    if not sent then
+        return nil, "не удалось передать команду десктопу: " .. tostring(serr)
+    end
+
+    local answer, aerr = await(BUDGET)
+    if not answer then return nil, aerr end
+    if answer.ok == false then
+        return nil, tostring(answer.error or "десктоп отказал без причины")
+    end
+    return answer, nil
+end
+
+return control

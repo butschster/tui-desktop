@@ -1,50 +1,28 @@
 version: "1.0"
 namespace: app
 
-# Standalone harness for acme/starter. Provides the host resources the boot
-# needs (app:db, app:processes, gateway + api router, env storage, a
+# Standalone harness for butschster/tui-desktop. Provides the host resources the
+# boot needs (app:db, app:processes, gateway + api router, env storage, a
 # permissive actor scope) and wires them through wippy/bootloader so the
-# co-located *_test.lua suites run in isolation. The router and gateway exist
-# only so the endpoint and static entries resolve; the HTTP and UI surfaces
-# are covered by the registry-shape suite, not exercised over HTTP.
+# co-located *_test.lua suites run in isolation. The router exists only so the
+# endpoint entries resolve; the command channel is covered as registry shape.
+#
+# Этот же харнесс поднимает десктоп руками, без приложения:
+#   cd test && wippy run --host butschster.tui_desktop:terminal desktop
 # Harness-only; excluded from publish via the module wippy.yaml.
 
 entries:
   - name: definition
     kind: ns.definition
-    meta: { title: Starter Test Harness }
-
-  - name: wait_for_boot
-    kind: function.lua
-    meta:
-      type: test
-      suite: "00_setup"
-      comment: Waits for the acme_starter_log_entries migration to land on app:db before the suites run.
-    source: file://wait_for_boot.lua
-    modules: [sql, time]
-    method: run
-
-  - name: log_test
-    kind: function.lua
-    meta:
-      type: test
-      comment: Log sink publishes its port, persists rows, and acknowledges writes.
-      group: Acme Starter
-      suite: acme_starter
-    source: file://log_test.lua
-    modules: [funcs, registry, security]
-    imports:
-      test: wippy.test:test
-      repo: acme.starter.persist:repo
-    method: run
+    meta: { title: TUI Desktop Test Harness }
 
   - name: wiring_test
     kind: function.lua
     meta:
       type: test
-      comment: Endpoint, view, nav, and security entries exist and reference each other consistently.
-      group: Acme Starter
-      suite: acme_starter
+      comment: Хосты, процессы, ручки и политики существуют и ссылаются друг на друга; лог на терминальном хосте заглушен, у командного канала нет права порождать процессы.
+      group: TUI Desktop
+      suite: butschster_tui_desktop
     source: file://wiring_test.lua
     modules: [registry]
     imports:
@@ -54,7 +32,7 @@ entries:
   - name: db
     kind: db.sql.sqlite
     meta:
-      comment: In-memory database for the starter suites.
+      comment: In-memory database — харнесс его не использует, но загрузчик просит ресурс.
     file: ":memory:"
 
   - name: env_storage
@@ -93,34 +71,30 @@ entries:
       effect: allow
 
   # The harness source is the lock root. Its .wippy.yaml replaces the declared
-  # acme/starter dependency with ../ so the module's canonical source and
+  # butschster/tui-desktop dependency with ../ so the module's canonical source and
   # colocated tests load directly without a lock-file replacement.
 
-  - name: starter_harness.dep.migration
+  # Харнесс тестирует модуль, значит зависит от него. Замена в .wippy.yaml
+  # подставляет сюда рабочую копию из ../, поэтому исходник и колокейтед
+  # тесты грузятся напрямую, без публикации.
+  - name: tui_desktop_harness.dep.module
     version: "*"
     kind: ns.dependency
     meta:
-      comment: Host binding for the migration dependency used by the module under test.
-    component: "wippy/migration"
+      comment: Модуль под тестом; источник подменяется на ../ в .wippy.yaml.
+    component: "butschster/tui-desktop"
     parameters:
-      - name: wippy.migration:app_db
-        value: app:db
+      - name: butschster.tui_desktop:api_router
+        value: app:api
 
-  - name: starter_harness.dep.contract
-    version: "*"
-    kind: ns.dependency
-    meta:
-      comment: Shared contract definitions imported by the replacement module under test.
-    component: "kickside/contract"
-
-  - name: starter_harness.dep.security
+  - name: tui_desktop_harness.dep.security
     version: "*"
     kind: ns.dependency
     meta:
       comment: Platform security groups (wippy.security:process) that give host-managed services their policy scope under strict mode.
     component: "wippy/security"
 
-  - name: starter_harness.dep.bootloader
+  - name: tui_desktop_harness.dep.bootloader
     version: "*"
     kind: ns.dependency
     meta:

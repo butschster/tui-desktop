@@ -1,0 +1,47 @@
+version: "1.0"
+namespace: butschster.tui_desktop.desktop
+
+entries:
+  # butschster.tui_desktop.desktop:chrome
+  - name: chrome
+    kind: library.lua
+    meta:
+      comment: Рамки, заголовки, кнопки и полоса окон. Чистые строки — ни одного вызова в рантайм.
+    source: file://chrome.lua
+    modules:
+      - tty
+
+  # butschster.tui_desktop.desktop:desktop
+  - name: desktop
+    kind: process.lua
+    meta:
+      comment: Композитор — единственный процесс на настоящем терминале. Держит окна, раздаёт ввод, принимает команды снаружи.
+      command:
+        name: desktop
+        short: Оконный десктоп в терминале
+        security:
+          actor: {id: butschster.tui_desktop.desktop:desktop}
+          policies: [butschster.tui_desktop.security:desktop_runtime]
+    source: file://desktop.lua
+    method: main
+    modules:
+      - channel
+      - process
+      - time
+      - tty
+    imports:
+      chrome: butschster.tui_desktop.desktop:chrome
+
+  # butschster.tui_desktop.desktop:window_pty
+  - name: window_pty
+    kind: process.lua
+    meta:
+      comment: Окно с настоящей программой под PTY. Видит обычный tty-порт и не знает, что оно окно.
+    source: file://window_pty.lua
+    method: main
+    modules:
+      - channel
+      - exec
+      - tty
+    security:
+      policies: [butschster.tui_desktop.security:desktop_runtime]

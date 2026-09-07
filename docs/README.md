@@ -10,6 +10,6 @@ This snapshot came from `kickside/kickside@0.1.108` and commit `484f2d86` on
 [Kickside Hub Wiki](https://hub.wippy.ai/kickside/kickside/wiki/docs/kickside-development/developer-handbook.md).
 
 Repository-specific commands and checks live in
-[`../AGENTS.md`](../AGENTS.md). When the Wiki and executable starter disagree,
+[`../AGENTS.md`](../AGENTS.md). When the Wiki and executable tui-desktop disagree,
 verify the current registry contract and fix both sources rather than adding a
 compatibility fallback.

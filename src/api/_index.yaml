@@ -1,26 +1,92 @@
 version: "1.0"
-namespace: acme.starter.api
+namespace: butschster.tui_desktop.api
+
+# Командный канал: тем же десктопом, за которым сидит человек, управляет
+# агент снаружи. Обе стороны работают одновременно — композитор один, и он
+# сам сериализует ввод с клавиатуры и команды из inbox.
 
 entries:
-  # acme.starter.api:get_status
-  - name: get_status
+  # butschster.tui_desktop.api:control
+  - name: control
+    kind: library.lua
+    meta:
+      comment: Найти композитор по имени, послать команду, дождаться ответа.
+    source: file://control.lua
+    modules:
+      - channel
+      - process
+      - time
+
+  # butschster.tui_desktop.api:list_windows
+  - name: list_windows
     kind: function.lua
     meta:
-      comment: GET /starter/status — module identity and logged entry count for the starter page.
-    source: file://get_status.lua
+      comment: GET /tui-desktop/windows — открытые окна, фокус и размер экрана.
+    source: file://list_windows.lua
     method: handler
     modules:
       - http
       - security
     imports:
-      repo: acme.starter.persist:repo
+      control: butschster.tui_desktop.api:control
+    security:
+      policies: [butschster.tui_desktop.security:desktop_command_channel]
 
-  # acme.starter.api:get_status.endpoint
-  - name: get_status.endpoint
+  - name: list_windows.endpoint
     kind: http.endpoint
     meta:
-      comment: Status endpoint behind the authenticated API router.
+      comment: Список окон за аутентифицированным роутером.
       router: app:api
     method: GET
-    func: get_status
-    path: /starter/status
+    func: list_windows
+    path: /tui-desktop/windows
+
+  # butschster.tui_desktop.api:open_window
+  - name: open_window
+    kind: function.lua
+    meta:
+      comment: POST /tui-desktop/windows — открыть окно с программой.
+    source: file://open_window.lua
+    method: handler
+    modules:
+      - http
+      - json
+      - security
+    imports:
+      control: butschster.tui_desktop.api:control
+    security:
+      policies: [butschster.tui_desktop.security:desktop_command_channel]
+
+  - name: open_window.endpoint
+    kind: http.endpoint
+    meta:
+      comment: Открытие окна за аутентифицированным роутером.
+      router: app:api
+    method: POST
+    func: open_window
+    path: /tui-desktop/windows
+
+  # butschster.tui_desktop.api:window_action
+  - name: window_action
+    kind: function.lua
+    meta:
+      comment: POST /tui-desktop/windows/{id}/{action} — действие над одним окном, включая чтение его экрана.
+    source: file://window_action.lua
+    method: handler
+    modules:
+      - http
+      - json
+      - security
+    imports:
+      control: butschster.tui_desktop.api:control
+    security:
+      policies: [butschster.tui_desktop.security:desktop_command_channel]
+
+  - name: window_action.endpoint
+    kind: http.endpoint
+    meta:
+      comment: Действие над окном за аутентифицированным роутером.
+      router: app:api
+    method: POST
+    func: window_action
+    path: /tui-desktop/windows/{id}/{action}

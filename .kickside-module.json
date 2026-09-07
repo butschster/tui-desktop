@@ -1,13 +1,13 @@
 {
   "templateVersion": 1,
-  "initialized": false,
+  "initialized": true,
   "identity": {
-    "organization": "acme",
-    "module": "starter",
-    "namespace": "acme.starter",
-    "tag": "acme-starter",
-    "route": "starter",
-    "title": "Acme Starter",
-    "githubOwner": "acme"
+    "organization": "butschster",
+    "module": "tui-desktop",
+    "namespace": "butschster.tui_desktop",
+    "tag": "butschster-tui-desktop",
+    "route": "tui-desktop",
+    "title": "TUI Desktop",
+    "githubOwner": "butschster"
   }
 }
