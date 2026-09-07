@@ -74,6 +74,25 @@ curl -s -H "$AUTH" -H 'Content-Type: application/json' -X POST \
 вывод уезжает вверх безвозвратно. Команде, чей вывод нужен целиком, дать файл
 (`make test > /tmp/out.log 2>&1`) и прочитать его отдельно.
 
+## Собрать новое окно
+
+Окно можно не писать файлом: его код едет в теле запроса, применяется в реестр
+и появляется в меню сразу.
+
+```bash
+curl -s -H "$AUTH" -H 'Content-Type: application/json' -X POST \
+  -d '{"name":"clock","title":"Часы","width":30,"height":6,
+       "modules":["time"],"source":"local tty = require(\"tty\") … return {main = main}"}' \
+  ${API%/tui-desktop}/tui-desktop/apps
+```
+
+Код обязан возвращать таблицу с `main`, а модули берутся из белого списка
+(`channel`, `time`, `tty`, `json`, `sql`, `env`; `tty` и `channel` добавляются
+всегда). Сохранённое окно переживает перезапуск: `GET /tui-desktop/apps`
+показывает список и признак `live`, `DELETE /tui-desktop/apps/{name}` убирает.
+
+Открывается такое окно как любое другое — по `entry` из ответа.
+
 ## Поднять десктоп
 
 ```bash

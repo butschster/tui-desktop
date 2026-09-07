@@ -149,6 +149,24 @@ local function define_tests()
             end
         end)
 
+        test.it("позволяет композитору вернуть сохранённые окна в реестр", function()
+            -- Восстановление живёт здесь, а не в фоновом сервисе: платформа
+            -- запрещает процессам группы wippy.security:process менять
+            -- реестр, и такой сервис молча не делал бы ничего.
+            local actions = actions_of(get(RUNTIME_POLICY_ID))
+            test.is_true(has(actions, "registry.apply"),
+                "без registry.apply окна не переживут перезапуск")
+
+            local data = data_of(get(DESKTOP_ID))
+            test.is_true(has(data.modules or {}, "sql"),
+                "композитору нужен sql, чтобы прочитать хранилище")
+            local imports = data.imports or {}
+            test.eq(qualify(imports.repo, "butschster.tui_desktop.persist"),
+                "butschster.tui_desktop.persist:repo")
+            test.eq(qualify(imports.apps, "butschster.tui_desktop.persist"),
+                "butschster.tui_desktop.persist:apps")
+        end)
+
         test.it("закрывает ручки политикой, которую внедряет приложение", function()
             local policy = data_of(get(ACCESS_POLICY_ID))
             local resources = policy.policy and policy.policy.resources

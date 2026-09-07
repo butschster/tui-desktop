@@ -25,9 +25,15 @@ entries:
         - process.registry.unregister
         - exec.get
         - exec.run
-        # Каталог окон приложения читается из реестра по meta.type.
+        # Каталог окон приложения читается из реестра по meta.type, а окна,
+        # собранные в рантайме, возвращаются в него на старте десктопа.
         - registry.get
         - registry.find
+        - registry.entry
+        - registry.apply
+        # Хранилище окон читается на старте десктопа; проверяется как
+        # `db.get` на идентификатор ресурса базы.
+        - db.get
       resources: "*"
       effect: allow
 
@@ -64,3 +70,38 @@ entries:
     targets:
       - entry: butschster.tui_desktop.security:desktop_endpoint_access
         path: ".groups +="
+
+  # butschster.tui_desktop.security:workshop_scope
+  #
+  # Мастерская и загрузчик: прочитать реестр, применить к нему версию,
+  # прочитать и записать строку хранилища. Права порождать процессы и
+  # запускать программы сюда не входят — окна открывает композитор, у
+  # которого они есть.
+  - name: workshop_scope
+    kind: security.policy
+    meta:
+      comment: Права мастерской и загрузчика окон, собранных в рантайме.
+    policy:
+      actions:
+        - process.context
+        - registry.get
+        - registry.entry
+        - registry.apply
+        - db.get
+      resources: "*"
+      effect: allow
+
+  # butschster.tui_desktop.security:app_window_scope
+  #
+  # Окно, собранное в рантайме. Оно рисует себя и может читать данные, но не
+  # порождает процессов и не запускает программ: код окна приходит по HTTP,
+  # и права ему выдаются ровно под рисование.
+  - name: app_window_scope
+    kind: security.policy
+    meta:
+      comment: Права окна, собранного в рантайме.
+    policy:
+      actions:
+        - process.context
+      resources: "*"
+      effect: allow

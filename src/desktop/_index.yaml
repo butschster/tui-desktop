@@ -26,12 +26,18 @@ entries:
     method: main
     modules:
       - channel
+      - env
+      - json
+      - logger
       - process
       - registry
+      - sql
       - time
       - tty
     imports:
       chrome: butschster.tui_desktop.desktop:chrome
+      repo: butschster.tui_desktop.persist:repo
+      apps: butschster.tui_desktop.persist:apps
 
   # butschster.tui_desktop.desktop:window_pty
   - name: window_pty

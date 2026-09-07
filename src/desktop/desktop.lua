@@ -19,7 +19,11 @@ local registry = require("registry")
 local time = require("time")
 local tty = require("tty")
 
+local logger = require("logger")
+
 local chrome = require("chrome")
+local repo = require("repo")
+local apps = require("apps")
 
 local WINDOW_HOST = "butschster.tui_desktop:workers"
 
@@ -88,6 +92,42 @@ local function main()
     local lifecycle = assert(process.events())
     local inbox = process.inbox()
     process.registry.register(SERVICE_NAME)
+
+    -- Окна, собранные в рантайме, возвращаются в реестр здесь, а не фоновым
+    -- сервисом: платформа намеренно запрещает процессам в группе
+    -- `wippy.security:process` менять реестр, и такой сервис молча не сделал
+    -- бы ничего. Композитор работает под собственным актором, и права у него
+    -- свои — а нужны эти окна ровно тогда, когда десктоп запущен.
+    local log = logger:named("tui_desktop.desktop")
+
+    -- Итог восстановления держится в состоянии и отдаётся командным каналом:
+    -- лог терминального хоста заглушён (иначе он разъедет кадр), и отказ,
+    -- рассказанный только в лог, не расскажут никому.
+    local restore_report: any = {restored = 0, failed = 0, error = nil, names = {}}
+
+    local stored, store_err = repo.list()
+    if store_err then
+        restore_report.error = tostring(store_err)
+        log:error("хранилище окон недоступно", {error = tostring(store_err)})
+    else
+        local restored, failed = 0, {}
+        for _, window in ipairs(stored or {}) do
+            local ok, aerr = apps.apply(window)
+            if ok then
+                restored = restored + 1
+            else
+                failed[#failed + 1] = window.name .. ": " .. tostring(aerr)
+                log:error("окно не поднялось", {window = window.name, error = tostring(aerr)})
+            end
+        end
+        restore_report.restored = restored
+        restore_report.failed = #failed
+        restore_report.names = failed
+        if restored > 0 or #failed > 0 then
+            log:info("окна восстановлены",
+                {restored = restored, failed = #failed, names = table.concat(failed, ", ")})
+        end
+    end
 
     local out = assert(tty.surface({
         alternate_screen = true,
@@ -507,7 +547,8 @@ local function main()
             for _, item in ipairs(windows) do list[#list + 1] = describe(item) end
             local top = focused()
             reply({ok = true, windows = list, focused = top and top.id or nil,
-                screen = {width = width, height = height}}, to)
+                screen = {width = width, height = height},
+                restore = restore_report}, to)
             return false
         end
 

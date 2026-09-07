@@ -31,6 +31,9 @@ local function handler()
         windows = answer.windows or {},
         focused = answer.focused,
         screen = answer.screen,
+        -- Что стало с сохранёнными окнами на старте: молчание здесь читалось
+        -- бы как «окон не было», а это другое утверждение.
+        restore = answer.restore,
     })
 end
 

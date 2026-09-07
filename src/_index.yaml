@@ -15,18 +15,41 @@ entries:
     kind: ns.definition
     meta:
       title: TUI Desktop
-      description: Оконный менеджер для терминала — композитор с перекрывающимися окнами, окна с настоящими программами под PTY и командный канал, которым окнами управляет агент.
+      description: Оконный менеджер для терминала — композитор с перекрывающимися окнами, окна с настоящими программами под PTY, командный канал для агента и хранилище окон, собранных на ходу.
+
+  # ─── Зависимости ─────────────────────────────────────────────────────
+  - version: "*"
+    name: dep.wippy.migration
+    kind: ns.dependency
+    meta:
+      comment: Миграция для таблицы окон, собранных в рантайме.
+    component: wippy/migration
 
   # ─── Что модуль просит у приложения ──────────────────────────────────
+  - name: target_db
+    kind: ns.requirement
+    meta:
+      comment: База, где хранятся окна, собранные в рантайме.
+    default: app:db
+    targets:
+      - entry: butschster.tui_desktop.migrations:01_create_windows
+        path: .meta.target_db
+
   - name: api_router
     kind: ns.requirement
     meta:
-      comment: HTTP-роутер, к которому крепится командный канал. Обязан требовать аутентификацию и endpoint_firewall.
+      comment: HTTP-роутер, к которому крепятся командный канал и мастерская. Обязан требовать аутентификацию и endpoint_firewall.
     default: app:api
     targets:
       - entry: butschster.tui_desktop.api:list_windows.endpoint
         path: .meta.router
       - entry: butschster.tui_desktop.api:open_window.endpoint
+        path: .meta.router
+      - entry: butschster.tui_desktop.api:create_app.endpoint
+        path: .meta.router
+      - entry: butschster.tui_desktop.api:list_apps.endpoint
+        path: .meta.router
+      - entry: butschster.tui_desktop.api:delete_app.endpoint
         path: .meta.router
       - entry: butschster.tui_desktop.api:window_action.endpoint
         path: .meta.router

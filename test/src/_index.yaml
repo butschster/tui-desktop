@@ -16,6 +16,21 @@ entries:
     kind: ns.definition
     meta: { title: TUI Desktop Test Harness }
 
+  - name: storage_test
+    kind: function.lua
+    meta:
+      type: test
+      comment: Хранилище окон переживает круг «сохранил — прочитал — удалил», а сборка записи реестра не пускает чужие модули.
+      group: TUI Desktop
+      suite: butschster_tui_desktop
+    source: file://storage_test.lua
+    modules: [sql, env, json, registry]
+    imports:
+      test: wippy.test:test
+      repo: butschster.tui_desktop.persist:repo
+      apps: butschster.tui_desktop.persist:apps
+    method: run
+
   - name: wiring_test
     kind: function.lua
     meta:
@@ -86,6 +101,16 @@ entries:
     parameters:
       - name: butschster.tui_desktop:api_router
         value: app:api
+
+  - name: tui_desktop_harness.dep.migration
+    version: "*"
+    kind: ns.dependency
+    meta:
+      comment: Host binding for the migration dependency used by the module under test.
+    component: "wippy/migration"
+    parameters:
+      - name: wippy.migration:app_db
+        value: app:db
 
   - name: tui_desktop_harness.dep.security
     version: "*"

@@ -1,0 +1,16 @@
+version: "1.0"
+namespace: butschster.tui_desktop.migrations
+
+entries:
+  # butschster.tui_desktop.migrations:01_create_windows
+  - name: 01_create_windows
+    kind: function.lua
+    meta:
+      type: migration
+      comment: Таблица окон, собранных в рантайме; из неё загрузчик поднимает их обратно после перезапуска.
+      target_db: app:db
+      timestamp: "2026-09-07T16:00:00Z"
+    source: file://01_create_windows.lua
+    imports:
+      migration: wippy.migration:migration
+    method: migrate

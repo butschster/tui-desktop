@@ -4,6 +4,9 @@ namespace: butschster.tui_desktop.api
 # Командный канал: тем же десктопом, за которым сидит человек, управляет
 # агент снаружи. Обе стороны работают одновременно — композитор один, и он
 # сам сериализует ввод с клавиатуры и команды из inbox.
+#
+# Рядом — мастерская: окно можно собрать прямо в работающем рантайме и
+# сохранить, чтобы оно пережило перезапуск.
 
 entries:
   # butschster.tui_desktop.api:control
@@ -90,3 +93,96 @@ entries:
     method: POST
     func: window_action
     path: /tui-desktop/windows/{id}/{action}
+
+  # ─── Мастерская: окна, собранные в рантайме ──────────────────────────
+  #
+  # Реестр меняется на живую, поэтому окно не обязано быть файлом. Ручки
+  # ниже принимают код будущего окна, поэтому живут за аутентифицированным
+  # роутером и за собственной политикой.
+
+  # butschster.tui_desktop.api:create_app
+  - name: create_app
+    kind: function.lua
+    meta:
+      comment: POST /tui-desktop/apps — собрать окно в реестре и сохранить его исходник.
+    source: file://create_app.lua
+    method: handler
+    modules:
+      - http
+      - json
+      - security
+      - sql
+      - env
+      - registry
+    imports:
+      repo: butschster.tui_desktop.persist:repo
+      apps: butschster.tui_desktop.persist:apps
+    security:
+      policies: [butschster.tui_desktop.security:workshop_scope]
+
+  - name: create_app.endpoint
+    kind: http.endpoint
+    meta:
+      comment: Мастерская за аутентифицированным роутером.
+      router: app:api
+    method: POST
+    func: create_app
+    path: /tui-desktop/apps
+
+  # butschster.tui_desktop.api:list_apps
+  - name: list_apps
+    kind: function.lua
+    meta:
+      comment: GET /tui-desktop/apps — сохранённые окна и признак того, живы ли они в реестре.
+    source: file://list_apps.lua
+    method: handler
+    modules:
+      - http
+      - security
+      - sql
+      - env
+      - json
+      - registry
+    imports:
+      repo: butschster.tui_desktop.persist:repo
+      apps: butschster.tui_desktop.persist:apps
+    security:
+      policies: [butschster.tui_desktop.security:workshop_scope]
+
+  - name: list_apps.endpoint
+    kind: http.endpoint
+    meta:
+      comment: Список собранных окон за аутентифицированным роутером.
+      router: app:api
+    method: GET
+    func: list_apps
+    path: /tui-desktop/apps
+
+  # butschster.tui_desktop.api:delete_app
+  - name: delete_app
+    kind: function.lua
+    meta:
+      comment: DELETE /tui-desktop/apps/{name} — убрать окно из хранилища и реестра.
+    source: file://delete_app.lua
+    method: handler
+    modules:
+      - http
+      - security
+      - sql
+      - env
+      - json
+      - registry
+    imports:
+      repo: butschster.tui_desktop.persist:repo
+      apps: butschster.tui_desktop.persist:apps
+    security:
+      policies: [butschster.tui_desktop.security:workshop_scope]
+
+  - name: delete_app.endpoint
+    kind: http.endpoint
+    meta:
+      comment: Удаление собранного окна за аутентифицированным роутером.
+      router: app:api
+    method: DELETE
+    func: delete_app
+    path: /tui-desktop/apps/{name}
