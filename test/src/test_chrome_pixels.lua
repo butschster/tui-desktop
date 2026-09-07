@@ -39,11 +39,17 @@ function chrome.fill(canvas: any, width, height, state: any)
     return {}
 end
 
+-- Кнопка «Пуск» на панели задач и строка, с которой начинается меню. Числа
+-- вынесены, потому что по ним же щёлкает проверка: разъехавшись, они дали бы
+-- «щелчок не сработал» вместо честного отказа.
+chrome.MENU_BUTTON = {from = 60, to = 70}
+chrome.MENU_ROW = 6
+
 -- Один кусок на заголовок каждого окна и один на панель задач — так же, как
 -- будет у настоящей: резать по строкам, чтобы набор текста в окне не
 -- переотправлял весь хром.
 function chrome.paint(state: any, cell_w, cell_h)
-    local placements, slots = {}, {}
+    local placements, slots, choices = {}, {}, {}
 
     for index, window in ipairs(state.windows) do
         placements[#placements + 1] = {
@@ -61,9 +67,31 @@ function chrome.paint(state: any, cell_w, cell_h)
         id = "taskbar", x = 1, y = state.height, cols = state.width, rows = 1,
     }
 
+    -- Кнопка меню — такое же попадание полосы, только с действием вместо
+    -- номера окна.
+    slots[#slots + 1] = {
+        row = state.height, from = chrome.MENU_BUTTON.from,
+        to = chrome.MENU_BUTTON.to, action = "menu",
+    }
+
+    -- Меню рисуется, только когда композитор говорит, что оно открыто: его
+    -- состояние держит механика, а тема лишь показывает.
+    if state.menu then
+        local items: any = state.menu.items or {}
+        placements[#placements + 1] = {
+            id = "menu", x = 2, y = chrome.MENU_ROW,
+            cols = 30, rows = math.max(1, #items),
+        }
+        for index in ipairs(items) do
+            choices[#choices + 1] = {
+                row = chrome.MENU_ROW + index - 1, from = 2, to = 31, index = index,
+            }
+        end
+    end
+
     return {
         placements = placements,
-        hits = {desktop = {}, bars = slots, menu = {}},
+        hits = {desktop = {}, bars = slots, menu = choices},
     }
 end
 

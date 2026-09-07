@@ -854,6 +854,134 @@ local function define_tests()
             process.registry.unregister(watcher)
         end)
 
+        test.it("щелчок работает во всех трёх группах попаданий, а не только по столу", function()
+            -- Механика в этом режиме не зовёт ни `bars`, ни `menu`: разметка
+            -- приходит группами из `paint`. Группа, до обработчика не
+            -- доехавшая, даёт щелчок в пустоту — снаружи это неотличимо от
+            -- «мышь не работает», и искать будут где угодно, кроме формы
+            -- ответа темы.
+            local service = "butschster.tui_desktop.test.pixels.hits"
+            local watcher = "butschster.tui_desktop.test.pixels.hits.watcher"
+            local box = mailbox(process.inbox())
+            process.registry.register(watcher)
+            local desk = boot_pixel_composer(service, watcher, "ok")
+
+            local first = ask_desktop(service, box, "desktop.open",
+                {entry = "app:idle_window", title = "Первое", x = 2, y = 3, w = 30, h = 8})
+            local second = ask_desktop(service, box, "desktop.open",
+                {entry = "app:idle_window", title = "Второе", x = 10, y = 5, w = 30, h = 8})
+            test.is_true(first.ok == true and second.ok == true, "окна не открылись")
+            local low = tostring(first.window.id)
+
+            -- ГРУППА bars, попадание с номером окна: кнопка на панели задач
+            -- поднимает нижнее окно.
+            click(desk, 5, 24)
+            local raised: any = nil
+            local deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                raised = ask_desktop(service, box, "desktop.list", {})
+                if raised.focused == low then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.eq(raised.focused, low, "попадание bars с номером окна обязано поднимать окно")
+
+            -- ГРУППА bars, попадание с действием: кнопка «Пуск» открывает
+            -- меню. Проверяется отдельно от пункта: иначе «щелчок не дошёл» и
+            -- «меню открылось, но пункт не сработал» слились бы в один отказ.
+            click(desk, 62, 24)
+            local opened_menu: any = nil
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                opened_menu = ask_desktop(service, box, "desktop.list", {})
+                if opened_menu.menu_open == true then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.is_true(opened_menu.menu_open == true,
+                "попадание bars с действием обязано открывать меню")
+
+            -- ГРУППА menu: щелчок по первому пункту открывает программу из
+            -- каталога. В харнессе видна в меню ровно одна запись, поэтому
+            -- пункт известен заранее.
+            click(desk, 5, 6)
+            local after: any = nil
+            deadline = time.now():unix_nano() + 8000000000
+            while time.now():unix_nano() < deadline do
+                after = ask_desktop(service, box, "desktop.list", {})
+                if #after.windows == 3 then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.eq(#after.windows, 3, "попадание menu обязано открывать программу")
+            test.eq(tostring(after.windows[#after.windows].entry), "app:menu_target",
+                "и именно ту, по которой щёлкнули")
+            test.is_true(after.menu_open == false, "выбранный пункт закрывает меню")
+
+            -- Контроль: щелчок мимо всякой разметки не открывает ничего и не
+            -- поднимает никого. Без него «работает» означало бы «на любой
+            -- щелчок что-нибудь происходит».
+            click(desk, 62, 24)
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                after = ask_desktop(service, box, "desktop.list", {})
+                if after.menu_open == true then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.is_true(after.menu_open == true, "меню снова открыто")
+
+            click(desk, 40, 20)
+            local closed: any = nil
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                closed = ask_desktop(service, box, "desktop.list", {})
+                if closed.menu_open == false then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.is_true(closed.menu_open == false, "щелчок мимо меню закрывает его")
+            test.eq(#closed.windows, 3, "и ничего не открывает")
+
+            process.registry.unregister(watcher)
+            process.terminate(tostring(desk.pid))
+        end)
+
+        test.it("плоские попадания темы не угадываются, и причина видна человеку", function()
+            -- «Мышь не работает» — то, как это выглядит на стенде; лог
+            -- терминального хоста заглушён, поэтому жалоба, рассказанная
+            -- только ему, не рассказана никому. Значит она обязана быть в
+            -- строке состояния — единственном месте, которое человек видит.
+            local service = "butschster.tui_desktop.test.pixels.flat"
+            local watcher = "butschster.tui_desktop.test.pixels.flat.watcher"
+            local box = mailbox(process.inbox())
+            process.registry.register(watcher)
+            local desk = boot_pixel_composer(service, watcher, "flat")
+
+            local first = ask_desktop(service, box, "desktop.open",
+                {entry = "app:idle_window", title = "Первое", x = 2, y = 3, w = 30, h = 8})
+            local second = ask_desktop(service, box, "desktop.open",
+                {entry = "app:idle_window", title = "Второе", x = 10, y = 5, w = 30, h = 8})
+            test.is_true(first.ok == true and second.ok == true, "окна не открылись")
+            local high = tostring(second.window.id)
+
+            local told: any = nil
+            local deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                told = ask_desktop(service, box, "desktop.list", {})
+                if tostring(told.notice) ~= "" then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.is_true(tostring(told.notice):find("плоск", 1, true) ~= nil,
+                "строка состояния обязана назвать причину: [" .. tostring(told.notice) .. "]")
+
+            -- И щелчок при этом действительно не работает — иначе жалоба была
+            -- бы про несуществующую беду.
+            click(desk, 5, 24)
+            channel.select({time.after("500ms"):case_receive()})
+            local unchanged = ask_desktop(service, box, "desktop.list", {})
+            test.eq(unchanged.focused, high,
+                "плоский список щелчков не даёт, и это не должно выглядеть как работа")
+
+            process.registry.unregister(watcher)
+            process.terminate(tostring(desk.pid))
+        end)
+
         test.it("хром картинками, содержимое символами, под картинками пробелы", function()
             local service = "butschster.tui_desktop.test.pixels.live"
             local watcher = "butschster.tui_desktop.test.pixels.live.watcher"

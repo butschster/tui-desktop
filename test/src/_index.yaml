@@ -102,6 +102,14 @@ entries:
       comment: Растровая тема для проверок — размещения без растров, попадания в ячейках.
     source: file://test_chrome_pixels.lua
 
+  - name: flat_chrome
+    kind: library.lua
+    meta:
+      comment: Растровая тема, отдающая попадания плоским списком — так выглядит неверно прочитанный контракт.
+    source: file://test_chrome_flat.lua
+    imports:
+      pixel_chrome: app:pixel_chrome
+
   # Композитор в пиксельном режиме. Модуля gfx у него нет намеренно: размер
   # ячейки приносит оболочка, и проверка ходит тем же путём, что настоящая.
   - name: test_composer_pixels
@@ -114,6 +122,7 @@ entries:
     imports:
       library: butschster.tui_desktop.desktop:library
       pixel_chrome: app:pixel_chrome
+      flat_chrome: app:flat_chrome
       cell_chrome: butschster.tui_desktop.desktop:chrome
 
   - name: painter_window
@@ -193,11 +202,24 @@ entries:
     method: main
     modules: [channel, time]
 
+  # Единственная запись харнесса, которая ВИДНА в меню: так пункт, по которому
+  # щёлкает проверка, известен заранее и не зависит от порядка сортировки.
+  - name: menu_target
+    kind: process.lua
+    meta:
+      type: tui_desktop.window
+      title: Мишень меню
+      comment: Окно, которое открывают из меню — и только из меню.
+    source: file://idle_window.lua
+    method: main
+    modules: [channel, time]
+
   - name: dialog_probe
     kind: process.lua
     meta:
       type: tui_desktop.window
       title: Окно с диалогом
+      in_menu: false
       comment: Окно, которое открывает свой диалог и обычную программу рядом.
     source: file://dialog_probe.lua
     method: main

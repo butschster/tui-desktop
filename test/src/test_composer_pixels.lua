@@ -8,6 +8,7 @@ local process = require("process")
 local library = require("library")
 local pixel_chrome = require("pixel_chrome")
 local cell_chrome = require("cell_chrome")
+local flat_chrome = require("flat_chrome")
 
 local function split(text)
     local out = {}
@@ -36,6 +37,9 @@ local function main(args)
         end
     elseif kind == "nothing" then
         options.cell_size = nil
+    elseif kind == "flat" then
+        options.chrome = flat_chrome
+        options.cell_size = function() return 10, 20 end
     elseif kind == "cells_theme" then
         options.chrome = cell_chrome
         options.cell_size = function() return 10, 20 end
