@@ -25,6 +25,9 @@ entries:
         - process.registry.unregister
         - exec.get
         - exec.run
+        # Каталог окон приложения читается из реестра по meta.type.
+        - registry.get
+        - registry.find
       resources: "*"
       effect: allow
 

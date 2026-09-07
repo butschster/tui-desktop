@@ -39,11 +39,18 @@ curl -s -H "$AUTH" -H 'Content-Type: application/json' -X POST \
   $API/windows                                        # → {"window":{"id":"w1",...}}
 
 curl -s -H "$AUTH" -H 'Content-Type: application/json' -X POST \
+  -d '{"entry":"app.desktop:window_calc"}' $API/windows   # окно-приложение
+
+curl -s -H "$AUTH" -H 'Content-Type: application/json' -X POST \
   -d '{"text":"make test","enter":true}' $API/windows/w1/type
 
 curl -s -H "$AUTH" -H 'Content-Type: application/json' -X POST \
   -d '{}' $API/windows/w1/screen                      # → {"rows":[...]} — экран окна
 ```
+
+Окно с программой открывается `command`, окно-приложение — `entry` (запись
+процесса, объявленная приложением). Что объявлено, видно в меню десктопа по
+`alt+o`; ту же пометку `meta.type: tui_desktop.window` можно искать в реестре.
 
 Остальные действия того же вида: `key` (`key`, `ctrl`, `alt`, `shift`), `move`
 (`x`, `y`), `resize` (`w`, `h`), `focus`, `minimize` (`value`), `close`.

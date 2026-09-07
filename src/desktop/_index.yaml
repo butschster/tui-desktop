@@ -27,6 +27,7 @@ entries:
     modules:
       - channel
       - process
+      - registry
       - time
       - tty
     imports:

@@ -143,6 +143,44 @@ function chrome.tabbar(canvas, width: any, windows, focused_id)
     return segments
 end
 
+-- Меню приложений: список окон, которые объявило приложение. Пустой список
+-- говорит об этом прямо — молчаливое пустое меню читается как поломка.
+function chrome.menu(canvas, width: any, height: any, items, failure)
+    local box_w = 40
+    if box_w > width - 4 then box_w = width - 4 end
+    if box_w < 12 then box_w = 12 end
+    local rows = #items + 2
+    local box_h = rows + 2
+    local left = (width - box_w) // 2
+    local top = (height - box_h) // 2
+    if left < 1 then left = 1 end
+    if top < 2 then top = 2 end
+
+    local span = box_w - 2
+    canvas:put(left, top, styles.focused:render("╭" .. string.rep(BORDER.horizontal, span) .. "╮"), box_w)
+    for row = 1, box_h - 2 do
+        canvas:put(left, top + row,
+            styles.focused:render("│") .. string.rep(" ", span) .. styles.focused:render("│"), box_w)
+    end
+    canvas:put(left, top + box_h - 1,
+        styles.focused:render("╰" .. string.rep(BORDER.horizontal, span) .. "╯"), box_w)
+    canvas:put(left + 2, top, styles.title:render(" приложения "), box_w - 4)
+
+    if failure then
+        -- Отказ реестра и пустой каталог выглядят одинаково, если не назвать
+        -- причину: человек ищет ошибку в своём приложении, а её там нет.
+        canvas:put(left + 2, top + 2, styles.hint:render("каталог не прочитан: " .. tostring(failure)), span - 2)
+    elseif #items == 0 then
+        canvas:put(left + 2, top + 2, styles.hint:render("приложение не объявило ни одного окна"), span - 2)
+    else
+        for index, item in ipairs(items) do
+            local label = " " .. index .. "  " .. clip(item.title, span - 6) .. " "
+            canvas:put(left + 1, top + index, styles.tab_idle:width(span):render(label), span)
+        end
+    end
+    canvas:put(left + 2, top + box_h - 1, styles.hint:render(" цифра — открыть · esc — закрыть "), span)
+end
+
 function chrome.statusbar(canvas, width: any, height: any, text)
     canvas:put(1, height, styles.bar:width(width):render(clip(" " .. text .. " ", width)), width)
 end

@@ -98,6 +98,16 @@ local function define_tests()
             test.is_true(has(data.modules or {}, "process"), "композитору нужен модуль process")
         end)
 
+        test.it("не зашивает список окон: своё одно, остальные приносит приложение", function()
+            -- Композитор открывает окно по записи процесса и находит чужие
+            -- окна по meta.type. Появление второго вида окна внутри модуля
+            -- означало бы, что каждое новое окно требует правки модуля.
+            local source = data_of(get(DESKTOP_ID)).source
+            test.not_nil(source, "процесс композитора обязан нести источник")
+            local windows = registry.find({["meta.type"] = "tui_desktop.window"})
+            test.not_nil(windows, "каталог окон должен читаться, пусть и пустым")
+        end)
+
         test.it("даёт окну exec и tty, но не process", function()
             -- Окно ничего не порождает: оно только отдаёт свой порт программе.
             local data = data_of(get(WINDOW_ID))

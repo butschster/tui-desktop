@@ -1,7 +1,9 @@
 -- POST /tui-desktop/windows — открыть окно с программой.
 --
--- Тело: {"command": "...", "title": "...", "x": 1, "y": 2, "w": 80, "h": 20}.
--- Всё необязательно; без команды окно получает интерактивный bash.
+-- Тело: {"entry": "app.desktop:window_calc", "command": "...", "title": "...",
+--         "x": 1, "y": 2, "w": 80, "h": 20}.
+-- Всё необязательно; без записи открывается окно с интерактивным bash, и
+-- тогда `command` называет программу.
 local http = require("http")
 local json = require("json")
 local security = require("security")
@@ -23,7 +25,7 @@ local function handler()
     if type(body) ~= "table" then body = {} end
 
     local answer, err = control.call("desktop.open", {
-        command = body.command, title = body.title,
+        entry = body.entry, command = body.command, title = body.title,
         x = body.x, y = body.y, w = body.w, h = body.h,
     })
     if not answer then

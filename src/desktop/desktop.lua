@@ -15,13 +15,23 @@
 
 local channel = require("channel")
 local process = require("process")
+local registry = require("registry")
 local time = require("time")
 local tty = require("tty")
 
 local chrome = require("chrome")
 
 local WINDOW_HOST = "butschster.tui_desktop:workers"
+
+-- Окно — это любая запись процесса, которая умеет писать в свой tty-порт.
+-- Модуль знает ровно одну свою (программа под PTY); всё остальное приносит
+-- приложение и называет записью — иначе каждое новое окно требовало бы
+-- правки этого модуля.
 local PTY_WINDOW = "butschster.tui_desktop.desktop:window_pty"
+
+-- Каталог окон приложения: записи, помеченные этим meta.type, композитор
+-- находит сам и показывает в меню по alt+o.
+local WINDOW_META_TYPE = "tui_desktop.window"
 local SERVICE_NAME = "butschster.tui_desktop.desktop"
 local REPLY_TOPIC = "desktop.reply"
 
@@ -109,6 +119,9 @@ local function main()
     -- Перетаскивание: одна структура вместо «либо nil, либо таблица» —
     -- во второй форме поля смещения для проверяющего не существуют.
     local drag: any = {active = false, id = "", mode = "move", dx = 0, dy = 0}
+    -- Меню открыто — весь ввод принадлежит ему, включая цифры: иначе выбор
+    -- пункта уехал бы в окно под меню.
+    local menu: any = nil
     local tabs = {}
     local quitting = false
 
@@ -150,7 +163,7 @@ local function main()
 
         if #windows == 0 then
             chrome.empty_desktop(canvas, width, height,
-                "alt+n — новое окно · ctrl+q — выход")
+                "alt+n — окно с bash · alt+o — приложения · ctrl+q — выход")
         end
 
         local top = focused()
@@ -164,12 +177,16 @@ local function main()
 
         local status
         if top then
-            status = string.format("%s · %dx%d · окон: %d · alt+n новое · alt+w закрыть · alt+tab дальше · ctrl+q выход",
+            status = string.format("%s · %dx%d · окон: %d · alt+n bash · alt+o приложения · alt+w закрыть · ctrl+q выход",
                 top.title, math.max(0, top.w - 2), math.max(0, top.h - 2), #windows)
         else
-            status = "нет окон · alt+n новое · ctrl+q выход"
+            status = "нет окон · alt+n окно с bash · alt+o приложения · ctrl+q выход"
         end
         chrome.statusbar(canvas, width, height, status)
+
+        if menu then
+            chrome.menu(canvas, width, height, menu.items, menu.failure)
+        end
 
         -- Аппаратный курсор один на экран, поэтому его получает только
         -- фокусное окно — и со смещением на свою рамку, иначе он встанет
@@ -188,6 +205,8 @@ local function main()
 
     local function open_window(spec)
         spec = type(spec) == "table" and spec or {}
+
+        local entry = type(spec.entry) == "string" and spec.entry ~= "" and spec.entry or PTY_WINDOW
 
         local w = clamp(spec.w or math.floor(width * 0.6), MIN_W, width)
         local h = clamp(spec.h or math.floor(desktop_height() * 0.7), MIN_H, desktop_height())
@@ -210,7 +229,7 @@ local function main()
             and spec.command or DEFAULT_COMMAND
 
         local pid, perr = process.with_options({terminal = grant})
-            :spawn_monitored(PTY_WINDOW, WINDOW_HOST, command)
+            :spawn_monitored(entry, WINDOW_HOST, command)
         if not pid then
             view:close()
             return nil, tostring(perr)
@@ -219,7 +238,9 @@ local function main()
         next_id = next_id + 1
         local window = {
             id = "w" .. next_id,
-            title = type(spec.title) == "string" and spec.title ~= "" and spec.title or command,
+            entry = entry,
+            title = type(spec.title) == "string" and spec.title ~= "" and spec.title
+                or (entry == PTY_WINDOW and command or entry),
             command = command,
             x = x, y = y, w = w, h = h,
             view = view, updates = updates, pid = pid,
@@ -377,7 +398,50 @@ local function main()
 
     -- Акселераторы держатся на alt: ctrl и tab слишком часто нужны самим
     -- программам в окнах, и красть их — значит ломать редактор внутри.
+    -- Каталог окон приложения. Читается в момент открытия меню, а не при
+    -- старте: приложение может объявить окно и без перезапуска десктопа.
+    local function catalog()
+        local found, err = registry.find({["meta.type"] = WINDOW_META_TYPE})
+        if err then return {}, tostring(err) end
+        if type(found) ~= "table" then return {}, "реестр ответил не списком" end
+        local items = {}
+        for _, entry in ipairs(found :: {any}) do
+            local record = entry :: any
+            local meta = type(record.meta) == "table" and record.meta or {}
+            local id = record.id
+            if type(id) == "string" then
+                items[#items + 1] = {
+                    entry = id,
+                    title = type(meta.title) == "string" and meta.title or id,
+                    w = tonumber(meta.width),
+                    h = tonumber(meta.height),
+                }
+            end
+        end
+        table.sort(items, function(left, right) return left.title < right.title end)
+        return items, nil
+    end
+
     local function handle_key(event)
+        if menu then
+            if event.key_type == "esc" or (event.ctrl and event.key == "q") then
+                menu = nil
+                draw()
+                return "handled"
+            end
+            local choice = type(event.key) == "string" and tonumber(event.key) or nil
+            local item = choice and menu.items[choice] or nil
+            if item then
+                local window, err = open_window({
+                    entry = item.entry, title = item.title, w = item.w, h = item.h,
+                })
+                if window then raise(window) end
+                menu = nil
+                draw()
+            end
+            return "handled"
+        end
+
         if event.ctrl and event.key == "q" then
             quitting = true
             for index = #windows, 1, -1 do close_window(windows[index]) end
@@ -398,6 +462,11 @@ local function main()
                 close_window(top); draw(); return "handled"
             elseif event.key == "m" and top then
                 top.minimized = true; draw(); return "handled"
+            elseif event.key == "o" then
+                local items, failure = catalog()
+                menu = {items = items, failure = failure}
+                draw()
+                return "handled"
             elseif event.key_type == "tab" and #windows > 1 then
                 local bottom = windows[1]
                 bottom.minimized = false
@@ -416,7 +485,7 @@ local function main()
 
     local function describe(window)
         return {
-            id = window.id, title = window.title, command = window.command,
+            id = window.id, entry = window.entry, title = window.title, command = window.command,
             x = window.x, y = window.y, width = window.w, height = window.h,
             ready = window.ready, minimized = window.minimized,
             maximized = window.maximized, closing = window.closing,
