@@ -1061,26 +1061,40 @@ local function run(options: any)
         }
     end
 
-    local function reply(body, to)
+    -- Ответ всегда называет команду, на которую отвечает. Без этого поля
+    -- спрашивающий сопоставляет ответ с вопросом по одному лишь порядку — а
+    -- отказ, приехавший сам (см. `refuse`), этот порядок нарушает.
+    local function reply(body: any, to, topic)
         if to == "" then return end
+        body.command = topic
         process.send(to, REPLY_TOPIC, body)
     end
 
-    -- Отказ, который некому услышать.
+    -- Отказ на команду, которой никто не ждёт.
     --
     -- Команды от окна приходят без обратного адреса: окно не ждёт ответа,
     -- чтобы не морозить свой кадр. Значит «нет такого окна» и «не знаю такой
     -- команды» уходили В НИКУДА, и опечатка в идентификаторе выглядела как
-    -- выполненная команда — то же молчание, что и у зашитого имени
-    -- композитора. Поэтому такой отказ уходит в строку состояния (её видит
-    -- человек) и в лог, а строка отдаётся командным каналом.
-    local function refuse(reason, to)
+    -- выполненная команда.
+    --
+    -- Теперь у отказа три адресата, и каждый нужен своему читателю: строка
+    -- состояния — человеку за столом, лог — тому, кто разбирается потом, и
+    -- САМ ОТПРАВИТЕЛЬ — потому что у окна есть канал ответов, и получить туда
+    -- отказ оно может, не замирая. Пометка `unsolicited` обязательна: без неё
+    -- приехавший сам отказ был бы принят за ответ на следующий вопрос.
+    local function refuse(reason, to, topic, from: any)
         if to ~= "" then
-            reply({ok = false, error = reason}, to)
+            reply({ok = false, error = reason}, to, topic)
             return false
         end
+        if from ~= nil then
+            process.send(tostring(from), REPLY_TOPIC, {
+                ok = false, error = reason, command = topic, unsolicited = true,
+            })
+        end
         notice = reason
-        log:warn("команда отклонена, а спросившего нет", {reason = reason})
+        log:warn("команда отклонена, а спросившего нет",
+            {reason = reason, command = tostring(topic)})
         return true
     end
 
@@ -1099,21 +1113,21 @@ local function run(options: any)
                 -- человеку. Наружу она отдаётся, чтобы «отказ показан» можно
                 -- было проверить, а не рассматривать глазами.
                 notice = notice,
-                restore = restore_report}, to)
+                restore = restore_report}, to, topic)
             return false
         end
 
         if topic == "desktop.refresh" then
             reload_desktop()
-            reply({ok = true, items = #desk.items, failure = desk.failure}, to)
+            reply({ok = true, items = #desk.items, failure = desk.failure}, to, topic)
             return true
         end
 
         if topic == "desktop.open" then
             local opened, err = open_window(body, from)
-            if not opened then return refuse(tostring(err), to) end
+            if not opened then return refuse(tostring(err), to, topic, from) end
             raise(opened)
-            reply({ok = true, window = describe(opened)}, to)
+            reply({ok = true, window = describe(opened)}, to, topic)
             return true
         end
 
@@ -1123,40 +1137,40 @@ local function run(options: any)
         -- опечатку в идентификаторе, которого не посылал, а ветка про
         -- неизвестную команду была недостижима вовсе.
         if not WINDOW_COMMANDS[topic] then
-            return refuse("неизвестная команда " .. tostring(topic), to)
+            return refuse("неизвестная команда " .. tostring(topic), to, topic, from)
         end
         if not window then
             -- Молчаливое «нет такого» превратило бы опечатку в id в успешную
             -- команду.
-            return refuse("нет окна " .. tostring(body.id), to)
+            return refuse("нет окна " .. tostring(body.id), to, topic, from)
         end
 
         if topic == "desktop.close" then
-            close_window(window); reply({ok = true}, to); return true
+            close_window(window); reply({ok = true}, to, topic); return true
         elseif topic == "desktop.focus" then
-            window.minimized = false; raise(window); reply({ok = true}, to); return true
+            window.minimized = false; raise(window); reply({ok = true}, to, topic); return true
         elseif topic == "desktop.move" then
             window.x = clamp(body.x, 1, math.max(1, width - window.w + 1))
             window.y = clamp(body.y, desktop_top, math.max(desktop_top, height - window.h))
-            reply({ok = true, window = describe(window)}, to)
+            reply({ok = true, window = describe(window)}, to, topic)
             return true
         elseif topic == "desktop.resize" then
             resize_window(window, body.w, body.h)
-            reply({ok = true, window = describe(window)}, to)
+            reply({ok = true, window = describe(window)}, to, topic)
             return true
         elseif topic == "desktop.minimize" then
             window.minimized = not not body.value
-            reply({ok = true, window = describe(window)}, to)
+            reply({ok = true, window = describe(window)}, to, topic)
             return true
         elseif topic == "desktop.screen" then
             -- Копия, а не сам массив: строки снимка — общая память брокера.
             local rows = {}
             for index, row in ipairs(window.rows) do rows[index] = row end
-            reply({ok = true, id = window.id, rows = rows, ready = window.ready}, to)
+            reply({ok = true, id = window.id, rows = rows, ready = window.ready}, to, topic)
             return false
         elseif topic == "desktop.type" then
             if not window.ready then
-                return refuse("окно " .. window.id .. " ещё не приняло ввод", to)
+                return refuse("окно " .. window.id .. " ещё не приняло ввод", to, topic, from)
             end
             local sent = 0
             for _, char in ipairs(runes(type(body.text) == "string" and body.text or "")) do
@@ -1167,21 +1181,24 @@ local function run(options: any)
             if body.enter then
                 send_to(window, {type = "key", key = "enter", key_type = "enter", action = "press"})
             end
-            reply({ok = true, sent = sent}, to)
+            reply({ok = true, sent = sent}, to, topic)
             return false
         elseif topic == "desktop.key" then
             local key = type(body.key) == "string" and body.key or ""
-            if key == "" then reply({ok = false, error = "клавиша не названа"}, to); return false end
+            if key == "" then return refuse("клавиша не названа", to, topic, from) end
             local ok = send_to(window, {
                 type = "key", key = key, key_type = body.key_type or key,
                 action = "press", ctrl = not not body.ctrl,
                 alt = not not body.alt, shift = not not body.shift,
             })
-            reply({ok = ok, error = ok and nil or "окно не приняло ввод"}, to)
+            if not ok then return refuse("окно " .. window.id .. " не приняло ввод", to, topic, from) end
+            reply({ok = true}, to, topic)
             return false
         end
 
-        return refuse("неизвестная команда " .. tostring(topic), to)
+        -- Досюда доходит только команда окна, которую забыли разобрать выше:
+        -- список WINDOW_COMMANDS и ветки обязаны совпадать.
+        return refuse("команда " .. tostring(topic) .. " объявлена, но не разобрана", to, topic, from)
     end
 
     -- ─── цикл ────────────────────────────────────────────────────────────

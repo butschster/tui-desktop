@@ -136,7 +136,7 @@ function api.replies()
     return opened, err
 end
 
--- Ответ, оставшийся от вопроса, который не дождались. Выбрасывается перед
+-- Ответ, оставшийся от прошлого вопроса, или отказ, приехавший сам. Выбрасывается перед
 -- новым вопросом: его никто не ждёт, а прочитанный как свежий он ответил бы на
 -- прошлый вопрос вместо нынешнего. Выбросить ответ безопасно — в отличие от
 -- команды, ради которой всё это и сделано.
@@ -198,20 +198,33 @@ function api.ask(topic, body, opts)
     if not ok then return nil, rerr end
 
     local expiry = time.after(budget)
-    local picked = channel.select({ch:case_receive(), expiry:case_receive()})
-    if picked.channel == expiry then
-        local name = api.service()
-        return nil, "десктоп «" .. name .. "» не ответил за " .. budget
-    end
-    if not picked.ok then
-        return nil, "канал ответов закрылся, пока ждали десктоп"
-    end
+    while true do
+        local picked = channel.select({ch:case_receive(), expiry:case_receive()})
+        if picked.channel == expiry then
+            local name = api.service()
+            return nil, "десктоп «" .. name .. "» не ответил за " .. budget
+        end
+        if not picked.ok then
+            return nil, "канал ответов закрылся, пока ждали десктоп"
+        end
 
-    local answer = unwrap(picked.value:payload())
-    if answer.ok == false then
-        return nil, tostring(answer.error or "десктоп отказал без причины")
+        local answer = unwrap(picked.value:payload())
+        if answer.unsolicited then
+            -- Отказ на команду, которой не ждали ответа: он приехал сам и
+            -- ответом на ЭТОТ вопрос не является. Принять его за ответ значит
+            -- соврать про другую команду — поэтому он только называется в
+            -- логе, а ожидание продолжается.
+            log:warn("десктоп отказал в команде, посланной без ожидания",
+                {command = tostring(answer.command), error = tostring(answer.error)})
+        elseif type(answer.command) == "string" and answer.command ~= topic then
+            log:warn("ответ не на этот вопрос",
+                {asked = tostring(topic), answered = tostring(answer.command)})
+        elseif answer.ok == false then
+            return nil, tostring(answer.error or "десктоп отказал без причины")
+        else
+            return answer, nil
+        end
     end
-    return answer, nil
 end
 
 -- list(opts) -> {windows, focused, screen, restore} | nil, причина
@@ -256,6 +269,10 @@ function api.dialog(spec, opts)
     return answer.window, nil
 end
 
+-- Отказ на команду без ожидания приезжает сюда же, помеченный `unsolicited`:
+-- окно, которое держит канал в своём `select`, узнаёт, что `close` или `focus`
+-- не выполнились, и не морозит себя ради этого. Окну, которое канал не
+-- создавало, отказ приходит обычным сообщением в inbox.
 function api.close(id)
     return call("desktop.close", {id = id})
 end

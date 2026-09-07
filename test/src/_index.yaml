@@ -106,6 +106,19 @@ entries:
     imports:
       desktop: butschster.tui_desktop.desktop:window_api
 
+  - name: refusal_probe
+    kind: process.lua
+    meta:
+      type: tui_desktop.window
+      title: Окно с промахом
+      in_menu: false
+      comment: Окно, которое шлёт промахивающуюся команду и слушает канал ответов.
+    source: file://refusal_probe.lua
+    method: main
+    modules: [channel, process, time]
+    imports:
+      desktop: butschster.tui_desktop.desktop:window_api
+
   - name: idle_window
     kind: process.lua
     meta:

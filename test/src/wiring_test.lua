@@ -172,11 +172,16 @@ local function click(desk: any, x, y)
     desk.view:send({type = "mouse", action = "release", button = "left", x = x, y = y})
 end
 
--- Разговор с композитором: сообщения приходят вперемешку (ответ композитора и
--- доклад окна), поэтому нужное берётся по топику, а остальное придерживается.
+-- Разговор с композитором: сообщения приходят вперемешку (ответ композитора,
+-- доклад окна и отказ, приехавший сам), поэтому нужное берётся по топику, а
+-- остальное придерживается.
+--
+-- Процесс у всех проверок один, поэтому и `held` общий: сообщение, оставшееся
+-- от прошлой проверки, иначе стало бы ответом на первый вопрос следующей.
 local function mailbox(inbox: any)
     local held = {}
     local box: any = {}
+    box.unsolicited = {}
 
     function box.take(topic, budget)
         for index, message in ipairs(held) do
@@ -197,6 +202,24 @@ local function mailbox(inbox: any)
         end
     end
 
+    -- Ответ ИМЕННО на эту команду. Отказ с пометкой `unsolicited` приехал сам
+    -- и ответом не является — он откладывается, и его можно проверить
+    -- отдельно. Без этого разбора проверка приняла бы чужой отказ за ответ:
+    -- ровно та ошибка, от которой защищается и библиотека окна.
+    function box.reply(command, budget)
+        local deadline = time.now():unix_nano() + 8000000000
+        while time.now():unix_nano() < deadline do
+            local body = box.take("desktop.reply", budget)
+            if body.unsolicited then
+                box.unsolicited[#box.unsolicited + 1] = body
+            elseif body.command == nil or body.command == command then
+                return body
+            end
+        end
+        test.is_true(false, "не дождались ответа на " .. tostring(command))
+        return {}
+    end
+
     return box
 end
 
@@ -214,7 +237,7 @@ local function ask_desktop(service, box, topic, body: any)
     payload.reply_to = tostring(process.pid())
     local sent, serr = process.send(service, topic, payload)
     test.is_true(sent == true, "команда не дошла до композитора: " .. tostring(serr))
-    return box.take("desktop.reply")
+    return box.reply(topic)
 end
 
 local function windows_by_id(listing: any)
@@ -548,6 +571,8 @@ local function define_tests()
             end
             test.is_true(type(told.notice) == "string" and told.notice:find("w404", 1, true) ~= nil,
                 "отказ обязан быть видимым: строка состояния молчит про w404")
+            test.is_true(#box.unsolicited > 0,
+                "тот же отказ обязан приехать и отправителю, а не только в строку состояния")
             test.eq(told.focused, high, "промах по идентификатору фокус не двигает")
 
             -- Щелчок по пустому столу. Он же служит вехой: композитор чистит
@@ -590,6 +615,43 @@ local function define_tests()
             test.eq(#left.windows, 1, "закрытое окно должно было уйти")
             test.eq(left.focused, high, "фокус обязан достаться оставшемуся окну")
 
+            process.terminate(tostring(desk.pid))
+        end)
+
+        test.it("отказ доезжает до окна, которое ответа не ждало", function()
+            -- Окно шлёт команды без обратного адреса, чтобы не морозить кадр.
+            -- Раньше отказ на такую команду окно не узнавало никогда: строка
+            -- состояния — человеку, лог — потом, а отправителю ничего.
+            local service = "butschster.tui_desktop.test.refusal"
+            local watcher = "butschster.tui_desktop.test.refusal.watcher"
+            local box = mailbox(process.inbox())
+            process.registry.register(watcher)
+            local desk = boot_composer(service)
+
+            local opened = ask_desktop(service, box, "desktop.open",
+                {entry = "app:refusal_probe", args = watcher, w = 30, h = 8})
+            test.is_true(opened.ok == true, "окно не открылось: " .. tostring(opened.error))
+
+            local report = box.take("probe.refusals")
+
+            -- Первым обязан приехать отказ на промах — помеченным, чтобы его
+            -- нельзя было принять за ответ на другой вопрос.
+            test.is_true(report.first_unsolicited == true,
+                "отказ обязан быть помечен как приехавший сам")
+            test.eq(report.first_command, "desktop.focus", "отказ обязан называть команду")
+            test.is_true(tostring(report.first_error):find("w404", 1, true) ~= nil,
+                "отказ обязан называть промах: " .. tostring(report.first_error))
+
+            -- И контроль: между промахом и вопросом окно послало ИСПРАВНУЮ
+            -- команду. Вторым пришёл ответ на вопрос — значит на исправную
+            -- команду композитор не прислал ничего, и «доезжает» не выродилось
+            -- в «шлёт на всё подряд». Ждать для этого не пришлось: сообщения
+            -- приходят по порядку.
+            test.eq(report.second_command, "desktop.list",
+                "вторым обязан быть ответ на вопрос, а не отклик на исправную команду")
+            test.is_true(report.second_ok == true, "ответ на desktop.list обязан быть успехом")
+
+            process.registry.unregister(watcher)
             process.terminate(tostring(desk.pid))
         end)
 
