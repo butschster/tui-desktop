@@ -75,6 +75,10 @@ local WINDOW_COMMANDS = {
     ["desktop.screen"] = true,
     ["desktop.type"] = true,
     ["desktop.key"] = true,
+    -- Состояние окна-вида, присланное его поставщиком. Тоже адресовано окну,
+    -- поэтому живёт здесь же: иначе «нет такого окна» и «нет такой команды»
+    -- снова разошлись бы по разным веткам.
+    ["desktop.state"] = true,
 }
 
 local DEFAULT_COMMAND = "/bin/bash --noprofile --norc"
@@ -609,6 +613,22 @@ local function run(options: any)
                 end
             end
         else
+            -- Фон и стол заливаются ЯЧЕЙКАМИ и в этом режиме тоже. Без этого
+            -- тело окна просвечивает столом там, где программа внутри ничего
+            -- не написала: в режиме символов фон закрашивал `chrome.window`, а
+            -- растровая тема в канву не пишет вовсе. И сам стол держался бы не
+            -- на своём цвете, а на цвете терминала.
+            if type(chrome.fill) == "function" then
+                local filled = chrome.fill(canvas, width, height, {
+                    top = desktop_top,
+                    bottom = desktop_last,
+                    items = desk.items,
+                    failure = desk.failure,
+                    selected = selected_id,
+                })
+                if type(filled) == "table" then desk_hits = filled end
+            end
+
             for _, window in ipairs(windows) do
                 if not window.minimized then put_content(window) end
             end
@@ -642,7 +662,11 @@ local function run(options: any)
             -- содержимого: иначе строка окна вылезла бы из-под чужой рамки.
             images, complaints = pixels.frame(canvas, painted)
             local hits, quarrel = pixels.hits(painted)
-            desk_hits, bar_hits, menu_hits = hits.desktop, hits.bars, hits.menu
+            bar_hits, menu_hits = hits.bars, hits.menu
+            -- Значки стола рисует `paint`, поэтому его разметка старше. Но
+            -- если он её не вернул, остаётся та, что вернула заливка: молча
+            -- потерянные щелчки по столу выглядят как мёртвые значки.
+            if #hits.desktop > 0 then desk_hits = hits.desktop end
             if quarrel then complaints[#complaints + 1] = quarrel end
             for _, complaint in ipairs(complaints) do
                 -- Отброшенное размещение видно только в логе: строка состояния
@@ -701,9 +725,11 @@ local function run(options: any)
 
         -- Тип нужен раньше геометрии: диалог встаёт не там, где обычное окно.
         local record: any = registry.get(entry)
+        local declared: any = nil
         local window_type = programs.DEFAULT_TYPE
         if record then
-            local declared, unknown = programs.item(record)
+            local unknown
+            declared, unknown = programs.item(record)
             if declared then window_type = declared.window_type end
             if unknown then
                 log:warn("неизвестный тип окна", {
@@ -734,6 +760,70 @@ local function run(options: any)
             local oh = math.tointeger(opener.h) or h
             x = clamp(ox + (ow - w) // 2, 1, math.max(1, width - w + 1))
             y = clamp(oy + (oh - h) // 2, desktop_top, math.max(desktop_top, height - h))
+        end
+
+        -- Окно-вид: процесса внутри нет вовсе. Рисует его тема, зовя чистую
+        -- библиотеку `render`; данные добывает отдельный процесс-поставщик со
+        -- своим узким актором. Композитор ни того, ни другого не исполняет —
+        -- он несёт состояние от поставщика к теме.
+        local content = declared and declared.content or programs.DEFAULT_CONTENT
+        if content == "pixels" then
+            local render_ref = declared and declared.render or nil
+            if not render_ref then
+                return nil, "окно " .. entry .. " объявило содержимое видом, "
+                    .. "но не назвало render — рисовать его нечем"
+            end
+            if not registry.get(render_ref) then
+                return nil, "окно " .. entry .. ": записи " .. render_ref .. " нет — "
+                    .. "мёртвая ссылка на отрисовку молчит до первого открытия"
+            end
+
+            local state_ref = declared and declared.state or nil
+            if state_ref and not registry.get(state_ref) then
+                return nil, "окно " .. entry .. ": записи " .. state_ref .. " нет — "
+                    .. "поставщик состояния объявлен, но не существует"
+            end
+
+            next_id = next_id + 1
+            local view_window: any = {
+                id = "w" .. next_id,
+                entry = entry,
+                window_type = window_type,
+                opened_by = opener and opener.id or nil,
+                title = type(spec.title) == "string" and spec.title ~= "" and spec.title
+                    or (declared and declared.title or entry),
+                content = content,
+                render = render_ref,
+                state_ref = state_ref,
+                -- Состояния ещё нет: вид рисуется пустым и ГОВОРИТ, что ждёт,
+                -- а не показывает вчерашнее и не висит.
+                waiting = state_ref ~= nil,
+                state_revision = 0,
+                x = x, y = y, w = w, h = h,
+                view = nil, updates = nil, pid = nil,
+                rows = {}, cursor = nil, revision = -1,
+                ready = false, minimized = false, maximized = false,
+                closing = false, deadline = nil,
+                saved = {x = x, y = y, w = w, h = h},
+            }
+
+            if state_ref then
+                -- Поставщик получает имя композитора и номер окна: обратно он
+                -- шлёт состояние сам, когда оно изменилось. Спрашивать его на
+                -- каждый кадр значило бы читать реестр шестьдесят раз в
+                -- секунду ради списка, который меняется раз в час, — и ждать
+                -- чужой процесс, пока стоит весь стол.
+                local state_pid, serr = process.spawn_monitored(tostring(state_ref),
+                    WINDOW_HOST, SERVICE_NAME, tostring(view_window.id))
+                if not state_pid then
+                    return nil, "поставщик состояния не запустился: " .. tostring(serr)
+                end
+                view_window.state_pid = state_pid
+                view_window.ready = true
+            end
+
+            windows[#windows + 1] = view_window
+            return view_window, nil
         end
 
         local view, verr = tty.viewport({width = w - FRAME_W, height = h - FRAME_H})
@@ -777,6 +867,7 @@ local function run(options: any)
             -- отсюда и общий z, и общее закрытие. Для обычной программы это
             -- просто след: кто её запустил.
             opened_by = opener and opener.id or nil,
+            content = content,
             title = type(spec.title) == "string" and spec.title ~= "" and spec.title
                 or (entry == PTY_WINDOW and command or entry),
             command = command,
@@ -790,6 +881,13 @@ local function run(options: any)
         windows[#windows + 1] = window
         return window, nil
     end
+
+    -- Объявлено заранее: закрытие вида зовёт `forget` сразу (процесса, чья
+    -- смерть позвала бы его сама, у вида нет), а `forget` в свою очередь
+    -- закрывает диалоги. Без этой строки `forget` внутри `close_window` — это
+    -- глобальная переменная, то есть nil, и композитор падает ровно там, где
+    -- закрывают окно-вид.
+    local forget: any
 
     -- Закрытие: сначала вежливо, потом по сроку. Окно, ещё не позвавшее
     -- tty.start(), ввод не принимает — его гасим сразу.
@@ -805,6 +903,15 @@ local function run(options: any)
         -- столе всё время вежливого срока — до трёх секунд после того, как
         -- его окно попросили закрыться.
         for _, child in ipairs(children_of(window.id)) do close_window(child) end
+
+        -- У вида процесса нет: ждать нечего и гасить нечего, кроме поставщика
+        -- состояния — он живёт при окне и вместе с ним уходит.
+        if window.content == "pixels" then
+            if window.state_pid then process.terminate(tostring(window.state_pid)) end
+            forget(window)
+            return
+        end
+
         if window.ready then
             window.view:send({type = "close"})
             window.deadline = time.after(CLOSE_GRACE)
@@ -813,10 +920,10 @@ local function run(options: any)
         end
     end
 
-    local function forget(window)
+    forget = function(window)
         local index = index_of(window.id)
         if index > 0 then table.remove(windows, index) end
-        window.view:close()
+        if window.view then window.view:close() end
         -- Окно могло умереть само, не дождавшись вежливого закрытия: его
         -- диалоги остались бы на столе привязанными к номеру, которого нет.
         for _, child in ipairs(children_of(window.id)) do close_window(child) end
@@ -827,7 +934,11 @@ local function run(options: any)
         window.h = clamp(tonumber(h) or window.h, MIN_H, desktop_height())
         window.x = clamp(window.x, 1, math.max(1, width - window.w + 1))
         window.y = clamp(window.y, desktop_top, math.max(desktop_top, height - window.h))
-        window.view:resize(window.w - FRAME_W, window.h - FRAME_H)
+        -- У вида viewport'а нет: его размер — это просто числа, по которым
+        -- тема рисует в следующем кадре.
+        if window.view then
+            window.view:resize(window.w - FRAME_W, window.h - FRAME_H)
+        end
     end
 
     local function toggle_maximize(window)
@@ -847,6 +958,18 @@ local function run(options: any)
 
     local function send_to(window, event)
         if not window or not window.ready or window.closing then return false end
+
+        -- Ввод в окно-вид уходит его поставщику состояния: живой части у
+        -- такого окна больше нет, а вид — чистая функция и щелчок принять не
+        -- может. Что делать с ним — решает поставщик и отвечает новым
+        -- состоянием.
+        if window.content == "pixels" then
+            if not window.state_pid then return false end
+            local sent = process.send(tostring(window.state_pid), "window.input",
+                {id = window.id, event = event})
+            return sent and true or false
+        end
+
         local ok = window.view:send(event)
         return ok and true or false
     end
@@ -1178,6 +1301,12 @@ local function run(options: any)
             id = window.id, entry = window.entry, title = window.title, command = window.command,
             window_type = window.window_type,
             opened_by = window.opened_by,
+            -- Чем рисуется содержимое и дождалось ли оно данных. Снаружи это
+            -- единственный способ отличить «вид ждёт состояния» от «вид
+            -- нарисован пустым»: на экране это одно и то же.
+            content = window.content,
+            waiting = window.waiting == true,
+            state_revision = window.state_revision,
             x = window.x, y = window.y, width = window.w, height = window.h,
             ready = window.ready, minimized = window.minimized,
             maximized = window.maximized, closing = window.closing,
@@ -1290,6 +1419,25 @@ local function run(options: any)
             window.minimized = not not body.value
             reply({ok = true, window = describe(window)}, to, topic)
             return true
+        elseif topic == "desktop.state" then
+            -- Состояние принимается ТОЛЬКО от поставщика этого окна. Иначе
+            -- содержимое чужого окна мог бы подменить любой, кто знает номер,
+            -- — а вид, нарисованный подложенными данными, от настоящего
+            -- неотличим.
+            if window.content ~= "pixels" then
+                return refuse("окно " .. window.id .. " рисует себя само, состояние ему не шлют",
+                    to, topic, from)
+            end
+            if window.state_pid == nil or from == nil
+                or tostring(window.state_pid) ~= tostring(from) then
+                return refuse("состояние окна " .. window.id
+                    .. " принимается только от его поставщика", to, topic, from)
+            end
+            window.content_state = body.state
+            window.waiting = false
+            window.state_revision = (math.tointeger(window.state_revision) or 0) + 1
+            reply({ok = true, revision = window.state_revision}, to, topic)
+            return true
         elseif topic == "desktop.screen" then
             -- Копия, а не сам массив: строки снимка — общая память брокера.
             local rows = {}
@@ -1354,8 +1502,11 @@ local function run(options: any)
         }
         local watched = {}
         for _, window in ipairs(windows) do
-            cases[#cases + 1] = window.updates:case_receive()
-            watched[#watched + 1] = window
+            -- У окна-вида кадров нет: их некому публиковать.
+            if window.updates then
+                cases[#cases + 1] = window.updates:case_receive()
+                watched[#watched + 1] = window
+            end
             if window.deadline then
                 cases[#cases + 1] = window.deadline:case_receive()
             end
@@ -1408,9 +1559,25 @@ local function run(options: any)
             elseif selected.channel == lifecycle then
                 local event = selected.value
                 if event.kind == process.event.EXIT then
+                    local gone = tostring(event.from)
                     for index = #windows, 1, -1 do
-                        if windows[index].pid == event.from then
-                            forget(windows[index])
+                        local window = windows[index]
+                        if window == nil then break end
+                        if window.pid ~= nil and tostring(window.pid) == gone then
+                            forget(window)
+                            break
+                        end
+                        -- Умер поставщик состояния: окно-вид остаётся, но
+                        -- рисовать его больше нечем — и об этом надо сказать.
+                        -- Вид, застывший на последнем состоянии, выглядит
+                        -- живым и врёт тем убедительнее, чем дольше висит.
+                        if window.state_pid ~= nil and tostring(window.state_pid) == gone then
+                            window.state_pid = nil
+                            window.waiting = true
+                            window.ready = false
+                            notice = "поставщик состояния окна " .. window.id .. " остановился"
+                            log:warn("поставщик состояния остановился",
+                                {window = window.id, entry = tostring(window.state_ref)})
                             break
                         end
                     end

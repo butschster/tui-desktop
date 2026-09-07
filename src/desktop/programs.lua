@@ -19,6 +19,16 @@ programs.WINDOW_META_TYPE = "tui_desktop.window"
 programs.DEFAULT_TYPE = "app"
 programs.TYPES = {app = true, dialog = true, tool = true}
 
+-- Чем рисуется содержимое окна. Объявляет ЗАПИСЬ, а не вывод из того, кто
+-- написал программу внутри: вывод следующий читатель сделает иначе.
+--
+-- Умолчание — `cells`, и это не вкус. Чужая программа (bash, htop) умеет
+-- выдавать только ячейки; окно, чья запись про это поле молчит, обязано вести
+-- себя как раньше. Ошибиться в сторону `cells` — потерять красоту; ошибиться в
+-- сторону `pixels` — потерять bash.
+programs.DEFAULT_CONTENT = "cells"
+programs.CONTENTS = {cells = true, pixels = true}
+
 local function meta_of(record: any)
     local entry: any = type(record) == "table" and record or {}
     if type(entry.meta) == "table" then return entry.meta end
@@ -56,6 +66,25 @@ function programs.in_menu(meta: any)
     return true
 end
 
+-- content(meta) -> "cells" | "pixels", неизвестное значение или nil
+--
+-- Неизвестное значение — это `cells` и предупреждение: окно, объявившее
+-- опечатку, обязано открыться как обычное, а не пропасть.
+function programs.content(meta: any)
+    if type(meta) ~= "table" then return programs.DEFAULT_CONTENT, nil end
+    local given: any = meta.window_content
+    if type(given) ~= "string" or given == "" then return programs.DEFAULT_CONTENT, nil end
+    if programs.CONTENTS[given] then return given, nil end
+    return programs.DEFAULT_CONTENT, given
+end
+
+local function reference(meta: any, field)
+    if type(meta) ~= "table" then return nil end
+    local given: any = meta[field]
+    if type(given) ~= "string" or given == "" then return nil end
+    return given
+end
+
 -- item(record) -> пункт каталога или nil
 --
 -- nil означает «это не программа»: запись без идентификатора открыть нечем.
@@ -66,6 +95,7 @@ function programs.item(record: any)
 
     local meta = meta_of(entry)
     local window_type, unknown = programs.window_type(meta)
+    local content, odd_content = programs.content(meta)
     return {
         entry = id,
         title = type(meta.title) == "string" and meta.title ~= "" and meta.title or id,
@@ -73,7 +103,13 @@ function programs.item(record: any)
         h = tonumber(meta.height),
         window_type = window_type,
         in_menu = programs.in_menu(meta),
-    }, unknown
+        -- Чем рисуется содержимое и чем оно живёт. `render` — чистая
+        -- библиотека отрисовки, `state` — процесс-поставщик со своим актором:
+        -- рисование в композиторе, права снаружи.
+        content = content,
+        render = reference(meta, "render"),
+        state = reference(meta, "state"),
+    }, unknown or odd_content
 end
 
 -- menu(records) -> пункты меню, предупреждения

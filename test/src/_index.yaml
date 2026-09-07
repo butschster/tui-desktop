@@ -126,6 +126,72 @@ entries:
     method: main
     modules: [channel, time, tty]
 
+  - name: probe_render
+    kind: library.lua
+    meta:
+      comment: Вид окна — чистая библиотека отрисовки; ссылка на неё обязана вести в живую запись.
+    source: file://probe_render.lua
+
+  - name: state_probe
+    kind: process.lua
+    meta:
+      comment: Поставщик состояния окна-вида — толкает состояние сам и принимает ввод.
+    source: file://state_probe.lua
+    method: main
+    modules: [channel, process, time]
+
+  # Окно-вид: процесса внутри нет, рисует тема, данные приносит поставщик.
+  - name: view_window
+    kind: process.lua
+    meta:
+      type: tui_desktop.window
+      title: Окно-вид
+      in_menu: false
+      window_content: pixels
+      render: app:probe_render
+      state: app:state_probe
+      comment: Окно, чьё содержимое рисует тема, а данные приносит отдельный процесс.
+    source: file://idle_window.lua
+    method: main
+    modules: [channel, time]
+
+  # Две сломанные записи: обе обязаны отказать с причиной, а не открыться
+  # окном, которое нечем нарисовать.
+  - name: view_static
+    kind: process.lua
+    meta:
+      type: tui_desktop.window
+      title: Вид без поставщика
+      in_menu: false
+      window_content: pixels
+      render: app:probe_render
+    source: file://idle_window.lua
+    method: main
+    modules: [channel, time]
+
+  - name: view_without_render
+    kind: process.lua
+    meta:
+      type: tui_desktop.window
+      title: Вид без отрисовки
+      in_menu: false
+      window_content: pixels
+    source: file://idle_window.lua
+    method: main
+    modules: [channel, time]
+
+  - name: view_with_dead_render
+    kind: process.lua
+    meta:
+      type: tui_desktop.window
+      title: Вид с мёртвой ссылкой
+      in_menu: false
+      window_content: pixels
+      render: app:nowhere
+    source: file://idle_window.lua
+    method: main
+    modules: [channel, time]
+
   - name: dialog_probe
     kind: process.lua
     meta:

@@ -28,6 +28,17 @@ function chrome.title_button_at(window, x: any, y: any)
     return nil
 end
 
+-- Заливка стола — ЯЧЕЙКАМИ, и в пиксельном режиме тоже: иначе тело окна
+-- просвечивает столом там, где программа внутри ничего не написала, а сам стол
+-- держится на цвете терминала, а не на своём.
+function chrome.fill(canvas: any, width, height, state: any)
+    local row = string.rep("▒", math.tointeger(width) or 0)
+    for line = math.tointeger(state.top) or 1, math.tointeger(state.bottom) or 1 do
+        canvas:put(1, line, row, width)
+    end
+    return {}
+end
+
 -- Один кусок на заголовок каждого окна и один на панель задач — так же, как
 -- будет у настоящей: резать по строкам, чтобы набор текста в окне не
 -- переотправлял весь хром.

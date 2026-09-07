@@ -221,6 +221,12 @@ local function mailbox(inbox: any)
     local held = {}
     local box: any = {}
     box.unsolicited = {}
+    -- Ответы берутся ПОДПИСКОЙ НА ТОПИК, а не из inbox, и это не стиль:
+    -- inbox небуферизован, и ответ, приехавший раньше, чем спросивший встал на
+    -- приём, ждёт в очереди процесса до следующего события — то есть в
+    -- проверке выглядит как «композитор не ответил». Ровно тем же каналом
+    -- слушает ответы окно.
+    box.replies = process.listen("desktop.reply", {message = true})
 
     function box.take(topic, budget)
         for index, message in ipairs(held) do
@@ -231,7 +237,8 @@ local function mailbox(inbox: any)
         end
         local expiry = time.after(budget or "8s")
         while true do
-            local picked = channel.select({inbox:case_receive(), expiry:case_receive()})
+            local picked = channel.select({
+                inbox:case_receive(), box.replies:case_receive(), expiry:case_receive()})
             if picked.channel == expiry or not picked.ok then
                 test.is_true(false, "не дождались " .. topic)
                 return {}
@@ -277,6 +284,40 @@ local function ask_desktop(service, box, topic, body: any)
     local sent, serr = process.send(service, topic, payload)
     test.is_true(sent == true, "команда не дошла до композитора: " .. tostring(serr))
     return box.reply(topic)
+end
+
+-- Спросить любой процесс и дождаться ответа на его топике.
+--
+-- Подписка создаётся ДО отправки и живёт только на время вопроса — тем же
+-- способом, каким ждёт ответа окно: топик забирает сообщение себе, и общий
+-- inbox проверки от него не зависит.
+local function ask_on(target, topic, body: any, reply_topic)
+    local payload: any = type(body) == "table" and body or {}
+    payload.reply_to = tostring(process.pid())
+    local sent, serr = process.send(target, topic, payload)
+    test.is_true(sent == true, "команда не дошла до " .. tostring(target) .. ": " .. tostring(serr))
+
+    local replies = process.listen(reply_topic, {message = true})
+    local expiry = time.after("8s")
+    local answer: any = {}
+    while true do
+        local picked = channel.select({replies:case_receive(), expiry:case_receive()})
+        if picked.channel == expiry or not picked.ok then
+            test.is_true(false, "не дождались ответа на " .. tostring(topic))
+            break
+        end
+        local got = body_of(picked.value)
+        if not got.unsolicited and (got.command == nil or got.command == topic) then
+            answer = got
+            break
+        end
+    end
+    process.unlisten(replies)
+    return answer
+end
+
+local function ask_fresh(service, topic, body: any)
+    return ask_on(service, topic, body, "desktop.reply")
 end
 
 local function windows_by_id(listing: any)
@@ -783,6 +824,13 @@ local function define_tests()
             end
             test.is_true(listing.pixels == true, "композитор обязан быть в пиксельном режиме")
 
+            -- Фон заливает тема, и в этом режиме тоже: без заливки тело окна
+            -- просвечивает столом там, где программа внутри ничего не
+            -- написала, — а на снимке КУСКА этого не видно, только на целом.
+            local empty_row = tostring(screen_of(desk)[20] or "")
+            test.is_true(empty_row:find("▒", 1, true) ~= nil,
+                "стол обязан быть залит и в пиксельном режиме: [" .. empty_row .. "]")
+
             -- Содержимое окна кладёт КОМПОЗИТОР: в режиме символов это делала
             -- тема заодно с рамкой, а растровая тема в канву не пишет вовсе.
             local content = tostring(screen_of(desk)[5] or "")
@@ -895,6 +943,144 @@ local function define_tests()
             test.eq(#grouped.bars, 1)
             test.eq(#grouped.desktop, 0)
             test.eq(#grouped.menu, 0)
+        end)
+    end)
+
+    test.describe("butschster.tui_desktop окно-вид без процесса", function()
+        test.it("вид ждёт своего поставщика, а не показывает пустоту молча", function()
+            local service = "butschster.tui_desktop.test.view"
+            local provider = "butschster.tui_desktop.test.provider"
+            local box = mailbox(process.inbox())
+            local desk = boot_composer(service)
+
+            -- Открытие без ожидания ответа, а номер окна берётся из списка:
+            -- проверяется состояние стола, а не форма ответа на открытие — её
+            -- проверяют соседние тесты.
+            tell_desktop(service, "desktop.open",
+                {entry = "app:view_window", x = 5, y = 4, w = 30, h = 8})
+
+            local opened: any = nil
+            local deadline = time.now():unix_nano() + 8000000000
+            while time.now():unix_nano() < deadline do
+                local listing = ask_desktop(service, box, "desktop.list", {})
+                if listing.windows[1] ~= nil then opened = listing.windows[1] break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.not_nil(opened, "вид не открылся")
+            local id = tostring(opened.id)
+            test.eq(opened.content, "pixels", "у вида содержимое рисует тема")
+            test.is_true(opened.waiting == true,
+                "состояния ещё нет, и вид обязан об этом говорить")
+            test.eq(math.tointeger(opened.state_revision) or -1, 0)
+
+            -- Поставщик поднят композитором и живёт своим процессом.
+            local alive: any = nil
+            local deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                alive = process.registry.lookup(provider)
+                if alive then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.not_nil(alive, "поставщик состояния обязан быть запущен")
+
+            -- Он знает, кому и про какое окно отвечать: имя и номер приехали
+            -- ему аргументами при запуске.
+            local report = ask_on(provider, "probe.report", {}, "probe.state")
+            test.eq(report.desktop, service, "поставщик обязан знать своего композитора")
+            test.eq(report.window, id, "и номер окна, про которое он отвечает")
+
+            -- Толкает состояние ОН, а не спрашивает композитор.
+            process.send(provider, "probe.push", {})
+            local listing: any = nil
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                listing = ask_fresh(service, "desktop.list", {})
+                if listing.windows[1] ~= nil and listing.windows[1].waiting == false then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.is_true(listing.windows[1].waiting == false, "состояние доехало — ждать больше нечего")
+            test.eq(math.tointeger(listing.windows[1].state_revision) or -1, 1)
+
+            -- И контроль: состояние ЧУЖОГО процесса не принимается. Вид,
+            -- нарисованный подложенными данными, от настоящего неотличим.
+            local stolen = ask_fresh(service, "desktop.state",
+                {id = id, state = {title = "подделка"}})
+            test.is_true(stolen.ok == false, "чужое состояние обязано быть отвергнуто")
+            test.is_true(tostring(stolen.error):find("поставщика", 1, true) ~= nil,
+                "отказ обязан называть причину: " .. tostring(stolen.error))
+            test.eq(math.tointeger(ask_fresh(service, "desktop.list", {})
+                .windows[1].state_revision) or -1, 1, "подделка не должна двигать счётчик")
+
+            -- Ввод уходит поставщику: живой части у вида больше нет.
+            click(desk, 10, 8)
+            local seen: any = nil
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                seen = ask_on(provider, "probe.report", {}, "probe.state")
+                if tostring(seen.inputs) ~= "" then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.is_true(tostring(seen.inputs):find("mouse:5,4", 1, true) ~= nil,
+                "щелчок обязан доехать поставщику в координатах окна: [" .. tostring(seen.inputs) .. "]")
+
+            -- Закрытие окна уносит поставщика: он живёт при окне.
+            tell_desktop(service, "desktop.close", {id = id})
+
+            -- Композитор обязан пережить закрытие вида: у окна без процесса
+            -- гасить нечего, кроме поставщика, и «закрыл — умер» выглядело бы
+            -- на стенде как случайное падение стола.
+            local emptied: any = nil
+            deadline = time.now():unix_nano() + 8000000000
+            while time.now():unix_nano() < deadline do
+                emptied = ask_fresh(service, "desktop.list", {})
+                if #(emptied.windows or {}) == 0 then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.eq(#(emptied.windows or {}), 0, "вид должен был закрыться, а композитор — выжить")
+
+            local gone = false
+            deadline = time.now():unix_nano() + 8000000000
+            while time.now():unix_nano() < deadline do
+                if not process.registry.lookup(provider) then gone = true break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.is_true(gone, "поставщик обязан уйти вместе со своим окном")
+
+            process.terminate(tostring(desk.pid))
+        end)
+
+        test.it("вид, который нечем нарисовать, не открывается и говорит почему", function()
+            -- Мёртвая ссылка на отрисовку молчит до первого открытия, а потом
+            -- выглядит пустым окном — то есть виновата будет тема.
+            local service = "butschster.tui_desktop.test.view.broken"
+            local box = mailbox(process.inbox())
+            local desk = boot_composer(service)
+
+            local nameless = ask_desktop(service, box, "desktop.open",
+                {entry = "app:view_without_render"})
+            test.is_true(nameless.ok == false, "вид без render открываться не должен")
+            test.is_true(tostring(nameless.error):find("render", 1, true) ~= nil,
+                "отказ обязан называть, чего не хватило: " .. tostring(nameless.error))
+
+            local dead = ask_desktop(service, box, "desktop.open",
+                {entry = "app:view_with_dead_render"})
+            test.is_true(dead.ok == false, "вид с мёртвой ссылкой открываться не должен")
+            test.is_true(tostring(dead.error):find("app:nowhere", 1, true) ~= nil,
+                "отказ обязан называть саму ссылку: " .. tostring(dead.error))
+
+            -- Вид без поставщика — законная витрина: рисовать есть чем,
+            -- добывать нечего, и ждать ему нечего.
+            local static = ask_desktop(service, box, "desktop.open", {entry = "app:view_static"})
+            test.is_true(static.ok == true, "вид без поставщика: " .. tostring(static.error))
+            test.eq(static.window.content, "pixels")
+            test.is_true(static.window.waiting == false, "ждать нечего — поставщика нет")
+
+            -- И контроль: обычное окно рядом открывается как открывалось.
+            local fine = ask_desktop(service, box, "desktop.open", {entry = "app:idle_window"})
+            test.is_true(fine.ok == true, "обычные окна отказ трогать не должен")
+            test.eq(fine.window.content, "cells", "умолчание — ячейки")
+
+            process.terminate(tostring(desk.pid))
         end)
     end)
 
