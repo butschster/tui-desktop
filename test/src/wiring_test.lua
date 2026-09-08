@@ -1195,10 +1195,17 @@ local function define_tests()
             test.eq(tostring(grown.windows[1].entry), "app:menu_target")
             test.eq(grown.menu_context, false, "после открытия меню закрыто")
 
-            -- Правая кнопка по пустому столу меню не открывает.
+            -- Правая кнопка по пустому столу — «Свойства» стола, раз оболочка
+            -- назвала окно (`desktop_properties`); выделение при этом снято.
             desk.view:send({type = "mouse", action = "press", button = "right", x = 60, y = 20})
-            channel.select({time.after("300ms"):case_receive()})
-            test.eq(listed().menu_context, false, "по пустому столу меню нет")
+            local bare = wait_context(true)
+            test.eq(bare.menu_context, true, "по пустому столу — свойства стола")
+            test.eq(math.tointeger(bare.menu_choices) or 0, 1)
+            test.eq(bare.selected, nil, "щелчок по пустому столу снимает выделение")
+            test.is_true((math.tointeger(bare.cell.w) or 0) > 0, "desktop.list называет размер ячейки")
+            test.eq(bare.pixels, true, "и режим кадра")
+            press(desk, "esc")
+            wait_context(false)
 
             desk.view:send({type = "key", action = "press", key_type = "runes", key = "q", ctrl = true})
             local deadline = time.now():unix_nano() + 5000000000

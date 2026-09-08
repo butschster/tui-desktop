@@ -33,6 +33,7 @@ local function main(args)
 
     local options: any = {
         chrome = pixel_chrome,
+        desktop_properties = "app:menu_target",
         service_name = service,
         pixels = true,
         restore = false,

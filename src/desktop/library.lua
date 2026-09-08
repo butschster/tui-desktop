@@ -210,6 +210,9 @@ local function run(options: any)
     -- не создаёт: это состояние оболочки, которое двигает пользователь.
     -- Она только показывает то, что дали, и говорит, куда кликнули.
     local read_desktop: any = type(options.desktop_items) == "function" and options.desktop_items or nil
+    -- Окно свойств самого стола — пункт «Свойства» по правой кнопке на
+    -- пустом месте. Идентификатор записи; нет — нет и меню.
+    local desktop_properties: any = type(options.desktop_properties) == "string" and options.desktop_properties or nil
 
     -- Восстановление окон мастерской требует права менять реестр. Оболочке
     -- под другим актором его может не быть, и тогда важно, чтобы отказ был
@@ -1322,15 +1325,22 @@ local function run(options: any)
             -- тема кладёт панель у якоря, а не над панелью задач.
             if event.button == "right" and not window then
                 local spot = desktop_spot(event.x, event.y)
+                local items: any = {}
                 if spot and spot.id then
                     selected_id = spot.id
-                    local items = context_items(spot)
-                    if #items > 0 then
-                        menu = {items = items, failure = nil, open = {}, cursor = 1,
-                            anchor = {x = event.x, y = event.y}}
-                    end
-                    draw()
+                    items = context_items(spot)
+                elseif event.y >= desktop_top and event.y <= desktop_last
+                    and type(desktop_properties) == "string" and desktop_properties ~= "" then
+                    -- Пустой стол: «Свойства» стола, если оболочка назвала
+                    -- окно (`options.desktop_properties`) — как в Windows 95.
+                    selected_id = nil
+                    items = {{label = "Свойства", entry = desktop_properties}}
                 end
+                if #items > 0 then
+                    menu = {items = items, failure = nil, open = {}, cursor = 1,
+                        anchor = {x = event.x, y = event.y}}
+                end
+                draw()
             end
             return
         end
@@ -1900,6 +1910,11 @@ local function run(options: any)
             local top = focused()
             reply({ok = true, windows = list, focused = top and top.id or nil,
                 screen = {width = width, height = height},
+                -- Размер ячейки в пикселях и режим кадра: окно «Свойства:
+                -- Экран» показывает разрешение по ним, а само их снять не
+                -- может — терминал отвечает только композитору.
+                cell = {w = cell_w, h = cell_h},
+                pixels = PIXELS,
                 -- Строка состояния: единственное место, где отказ виден
                 -- человеку. Наружу она отдаётся, чтобы «отказ показан» можно
                 -- было проверить, а не рассматривать глазами.
