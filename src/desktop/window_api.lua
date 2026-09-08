@@ -34,7 +34,9 @@ local DEFAULT_SERVICE = "butschster.tui_desktop.desktop"
 -- умирать на первой строке из-за диагностики — отсюда pcall.
 local has_ctx, ctx = pcall(require, "ctx")
 
+local input = require("input")
 local api = {}
+api.normalize_event = input.normalize
 
 api.CONTEXT_KEY = CONTEXT_KEY
 api.DEFAULT_SERVICE = DEFAULT_SERVICE
@@ -279,6 +281,24 @@ end
 
 function api.focus(id)
     return call("desktop.focus", {id = id})
+end
+
+-- State providers use the same owner and command channel as TTY windows.
+-- No reply is requested for frames: feeding replies back into drawing would loop.
+function api.publish_state(id, state: any)
+    local ok, err = call("desktop.state", {id = id, state = state,
+        title = type(state) == "table" and state.title or nil})
+    return ok, err
+end
+
+function api.inputs()
+    local opened = process.listen("window.input", {message = true})
+    return opened
+end
+
+function api.input_event(message: any)
+    local body = unwrap(message:payload())
+    return input.normalize(body.event)
 end
 
 return api

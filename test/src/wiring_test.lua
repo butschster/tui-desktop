@@ -917,7 +917,7 @@ local function define_tests()
             -- ГРУППА menu, папка: щелчок по строке с путём раскрывает её.
             -- Мышью это тот же путь, что стрелкой вправо, и до сегодняшнего дня
             -- не был проверен ни один из них.
-            click(desk, 5, 6)
+            click(desk, 5, 7)
             local deepened: any = nil
             deadline = time.now():unix_nano() + 5000000000
             while time.now():unix_nano() < deadline do
@@ -931,7 +931,7 @@ local function define_tests()
             -- ГРУППА menu, программа: щелчок по пункту внутри раскрытой папки
             -- открывает её. Пункты второй панели лежат правее — по разметке,
             -- которую вернула тема.
-            click(desk, 40, 6)
+            click(desk, 40, 7)
             local after: any = nil
             deadline = time.now():unix_nano() + 8000000000
             while time.now():unix_nano() < deadline do
@@ -1073,6 +1073,73 @@ local function define_tests()
             press(desk, "enter")
             test.eq(opened_after(1), "app:menu_target",
                 "стрелка вниз обязана двигать курсор на следующую строку")
+
+            process.registry.unregister(watcher)
+            process.terminate(tostring(desk.pid))
+        end)
+
+        test.it("наведение мыши выделяет строку меню и раскрывает папку с задержкой", function()
+            -- Терминал докладывает движение без нажатия, и в Windows строка
+            -- под указателем выделена, а папка под ним раскрывается сама.
+            -- Проверяется ПОЛЕМ `menu_cursor`: «наведение не выделило» и
+            -- «выделило, а тема не нарисовала» на экране одинаковы.
+            local service = "butschster.tui_desktop.test.pixels.hover"
+            local watcher = "butschster.tui_desktop.test.pixels.hover.watcher"
+            local box = mailbox(process.inbox())
+            process.registry.register(watcher)
+            local desk = boot_pixel_composer(service, watcher, "ok")
+
+            local function hover(x, y)
+                local sent = desk.view:send({type = "mouse", action = "motion", button = "none", x = x, y = y})
+                test.is_true(sent == true, "движение мыши не доехало до экрана композитора")
+            end
+
+            local function wait_for(check, what)
+                local shown: any = nil
+                local deadline = time.now():unix_nano() + 5000000000
+                while time.now():unix_nano() < deadline do
+                    shown = ask_desktop(service, box, "desktop.list", {})
+                    if check(shown) then return shown end
+                    channel.select({time.after("100ms"):case_receive()})
+                end
+                test.fail(what)
+                return shown
+            end
+
+            click(desk, 62, 24)
+            local opened = wait_for(function(shown) return shown.menu_open == true end,
+                "меню обязано открыться")
+            test.eq(math.tointeger(opened.menu_cursor) or -1, 1, "меню открывается с курсором на первой строке")
+
+            -- Строка-программа под указателем выделяется сразу; каскад не трогается.
+            hover(5, 8)
+            local moved = wait_for(function(shown) return (math.tointeger(shown.menu_cursor) or -1) == 2 end,
+                "наведение обязано выделить строку под указателем")
+            test.eq(tostring(moved.menu_path), "", "наведение на программу ничего не раскрывает")
+
+            -- Папка раскрывается — но не первым же событием: между «иду в
+            -- подменю» и «прошёл мимо» различает только задержка.
+            hover(5, 7)
+            local at_once: any = ask_desktop(service, box, "desktop.list", {})
+            test.eq(tostring(at_once.menu_path), "", "папка раскрывается с задержкой, а не в тот же миг")
+            local deepened = wait_for(function(shown) return tostring(shown.menu_path) == "Программы" end,
+                "наведение на папку обязано раскрыть её")
+            test.eq(math.tointeger(deepened.menu_cursor) or -1, 0, "в раскрытом наведением подменю ничего не выбрано")
+
+            -- Уход на программу корня закрывает подменю и выделяет её.
+            -- Строки темы харнесса по две ячейки: папка 6–7, программы 8–9 и 10–11.
+            hover(5, 10)
+            local back = wait_for(function(shown) return tostring(shown.menu_path) == "" end,
+                "уход с папки обязан закрыть подменю")
+            test.eq(math.tointeger(back.menu_cursor) or -1, 3, "строка под указателем выделена")
+
+            -- Enter открывает ИМЕННО выделенную наведением строку.
+            local before = #ask_desktop(service, box, "desktop.list", {}).windows
+            press(desk, "enter")
+            local grown = wait_for(function(shown) return #shown.windows > before end,
+                "enter на выделенной наведением строке обязан открыть её")
+            test.eq(tostring(grown.windows[#grown.windows].entry), "app:menu_target",
+                "открылась строка под указателем, а не первая")
 
             process.registry.unregister(watcher)
             process.terminate(tostring(desk.pid))
@@ -1378,7 +1445,7 @@ local function define_tests()
             local covered: any = {
                 pixels = {check = true, blank_under = true, hits = true, frame = true},
                 programs = {window_type = true, in_menu = true, content = true,
-                    item = true, menu = true},
+                    item = true, menu = true, resizable = true},
             }
 
             for name, value in pairs(pixels) do
@@ -1405,6 +1472,31 @@ local function define_tests()
             local plain, quiet = programs.content({})
             test.eq(plain, "cells", "молчащая запись ведёт себя как раньше")
             test.is_nil(quiet)
+        end)
+
+        test.it("фиксированный размер объявляет запись, умолчание — тянется", function()
+            -- Строка "false" — отказ наравне с булевым: запись приезжает и из
+            -- YAML, и из JSON, и «строка — это правда» дало бы тянущийся
+            -- калькулятор ровно у того, кто просил обратного.
+            test.is_true(programs.resizable({}), "молчащая запись тянется, как раньше")
+            test.is_true(programs.resizable(nil))
+            test.is_false(programs.resizable({resizable = false}))
+            test.is_false(programs.resizable({resizable = "false"}))
+            test.is_true(programs.resizable({resizable = true}))
+
+            local item = programs.item({id = "app:calc", meta = {resizable = false}})
+            test.is_false(item.resizable, "признак обязан доехать до пункта каталога")
+            local plain = programs.item({id = "app:bash", meta = {}})
+            test.is_true(plain.resizable)
+        end)
+
+        test.it("фиксированный размер берётся из записи, даже если просили другой", function()
+            -- Часы с панели задач открываются без размера; окно, взявшее
+            -- умолчание композитора, встало бы во весь стол с диалогом в углу.
+            local item = programs.item({id = "app:clock", meta = {resizable = false, width = 42, height = 18}})
+            test.eq(item.w, 42)
+            test.eq(item.h, 18)
+            test.is_false(item.resizable)
         end)
 
         test.it("плоский список попаданий не угадывает, а жалуется", function()
@@ -1468,6 +1560,64 @@ local function define_tests()
                 "курсор обязан доехать до темы: иначе стрелка двигает невидимое")
 
             process.terminate(tostring(desk.pid))
+        end)
+    end)
+
+    test.describe("butschster.tui_desktop отступы пиксельной темы", function()
+        test.it("фон рисуется до содержимого, а мышь отсчитывается от viewport", function()
+            local service = "butschster.tui_desktop.test.pixels.insets"
+            local provider = "butschster.tui_desktop.test.provider"
+            local watcher = service .. ".watcher"
+            process.registry.register(watcher)
+            local desk = boot_pixel_composer(service, watcher, "insets")
+            tell_desktop(service, "desktop.open",
+                {entry = "app:view_window", x = 5, y = 4, w = 30, h = 12})
+            local deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                if process.registry.lookup(provider) then break end
+                channel.select({time.after("20ms"):case_receive()})
+            end
+            test.not_nil(process.registry.lookup(provider))
+            local rows = screen_of(desk)
+            test.is_true(tostring(rows[7]):find("BACKGROUND", 1, true) ~= nil,
+                "композитор должен вызвать фон темы")
+            click(desk, 7, 7)
+            local report: any = nil
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                report = ask_on(provider, "probe.report", {}, "probe.state")
+                if tostring(report.inputs):find("mouse:", 1, true) then break end
+                channel.select({time.after("20ms"):case_receive()})
+            end
+            test.is_true(tostring(report.inputs):find("mouse:1,1", 1, true) ~= nil,
+                "первый пиксельный viewport должен получить первую ячейку: " .. tostring(report.inputs))
+            desk.view:send({type = "mouse", action = "wheel", button = "wheel_down", x = 7, y = 7})
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                report = ask_on(provider, "probe.report", {}, "probe.state")
+                if tostring(report.inputs):find("mouse:1,1:wheel:wheel_down", 1, true) then break end
+                channel.select({time.after("20ms"):case_receive()})
+            end
+            test.is_true(tostring(report.inputs):find("mouse:1,1:wheel:wheel_down", 1, true) ~= nil,
+                "wheel must reach the client at the same coordinates as a click")
+            -- An open menu owns input: wheel must not leak to the window below.
+            click(desk, 65, 24)
+            desk.view:send({type = "mouse", action = "wheel", button = "wheel_up", x = 7, y = 7})
+            press(desk, "esc")
+            ask_fresh(service, "desktop.list", {})
+            report = ask_on(provider, "probe.report", {}, "probe.state")
+            test.is_true(tostring(report.inputs):find("wheel_up", 1, true) == nil)
+            local listed = ask_fresh(service, "desktop.list", {})
+            for _, window in ipairs(listed.windows or {}) do
+                tell_desktop(service, "desktop.close", {id = window.id})
+            end
+            deadline = time.now():unix_nano() + 8000000000
+            while time.now():unix_nano() < deadline and process.registry.lookup(provider) do
+                channel.select({time.after("20ms"):case_receive()})
+            end
+            test.is_nil(process.registry.lookup(provider), "поставщик должен завершиться после закрытия")
+            process.terminate(tostring(desk.pid))
+            process.registry.unregister(watcher)
         end)
     end)
 
@@ -1729,6 +1879,68 @@ local function define_tests()
             test.eq(plain.title, "Калькулятор")
         end)
     end)
+    test.describe("taskbar launch and shell exit", function()
+        test.it("raises one clock window and closes its provider through the Start menu", function()
+            local service = "butschster.tui_desktop.test.actions"
+            local provider = "butschster.tui_desktop.test.provider"
+            local watcher = service .. ".watcher"
+            process.registry.register(watcher)
+            local desk = boot_pixel_composer(service, watcher, "actions")
+            click(desk, 77, 24)
+            local listing: any = {}
+            local deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                listing = ask_fresh(service, "desktop.list", {})
+                if #listing.windows == 1 and process.registry.lookup(provider) then break end
+                channel.select({time.after("20ms"):case_receive()})
+            end
+            test.eq(#listing.windows, 1)
+            test.eq(listing.windows[1].entry, "app:view_window")
+            local id = listing.windows[1].id
+            tell_desktop(service, "desktop.minimize", {id = id})
+            click(desk, 77, 23)
+            listing = ask_fresh(service, "desktop.list", {})
+            test.eq(#listing.windows, 1)
+            test.eq(listing.windows[1].id, id)
+            test.is_true(not listing.windows[1].minimized)
+            click(desk, 65, 24)
+            click(desk, 10, 9)
+            deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline do
+                if not process.registry.lookup(service) and not process.registry.lookup(provider) then break end
+                channel.select({time.after("20ms"):case_receive()})
+            end
+            test.is_nil(process.registry.lookup(service), "Start exit must stop an empty compositor immediately")
+            test.is_nil(process.registry.lookup(provider), "the clock provider must stop with its window")
+            desk.view:close()
+            process.registry.unregister(watcher)
+        end)
+
+        test.it("exits by Enter on the menu action and by Ctrl+Q with the menu open", function()
+            for _, method in ipairs({"enter", "ctrlq"}) do
+                local service = "butschster.tui_desktop.test.quit." .. method
+                local watcher = service .. ".watcher"
+                process.registry.register(watcher)
+                local desk = boot_pixel_composer(service, watcher, "actions")
+                click(desk, 65, 24)
+                if method == "enter" then
+                    press(desk, "down")
+                    press(desk, "enter")
+                else
+                    desk.view:send({type = "key", action = "press", key = "q", key_type = "runes", ctrl = true})
+                end
+                local deadline = time.now():unix_nano() + 5000000000
+                while time.now():unix_nano() < deadline and process.registry.lookup(service) do
+                    channel.select({time.after("20ms"):case_receive()})
+                end
+                test.is_nil(process.registry.lookup(service))
+                desk.view:close()
+                process.registry.unregister(watcher)
+            end
+        end)
+    end)
+
+
 end
 
 local run_cases = test.run_cases(define_tests)

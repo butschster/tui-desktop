@@ -39,7 +39,16 @@ local function main(args)
         desktop_items = desktop_items,
     }
 
-    if kind == "ok" then
+    if kind == "actions" then
+        pixel_chrome.clock_entry = "app:view_window"
+        options.cell_size = function() return 10, 20 end
+        options.catalog = function()
+            return {{title = "Завершение работы", action = "quit"}}, nil
+        end
+    elseif kind == "insets" then
+        pixel_chrome.configure_insets()
+        options.cell_size = function() return 10, 20 end
+    elseif kind == "ok" then
         options.cell_size = function() return 10, 20 end
     elseif kind == "silent" then
         -- Ровно то, чем отвечает gfx.cell_size() на терминале, который

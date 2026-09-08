@@ -81,7 +81,7 @@ local WINDOW_COMMANDS = {
     ["desktop.state"] = true,
 }
 
-local DEFAULT_COMMAND = "/bin/bash --noprofile --norc"
+local DEFAULT_COMMAND = "/bin/bash -i"
 local CLOSE_GRACE = "3s"
 
 
@@ -89,6 +89,12 @@ local CLOSE_GRACE = "3s"
 -- Без этого тика кадр обновляется только на событии, и время на экране
 -- останавливается — вид «оболочка зависла» при исправной оболочке.
 local CLOCK_TICK = "15s"
+
+-- Задержка, с которой наведение в меню раскрывает папку или закрывает
+-- подменю. Как в Windows: без неё мышь, идущая от папки к её подменю по
+-- диагонали, проходит над соседней строкой и закрывает то, куда идёт.
+-- Выделение самой строки задержки не ждёт.
+local HOVER_DELAY = "300ms"
 
 -- Печатаемый текст, который агент шлёт в окно, отправляется по одной
 -- клавише: у окна нет «вставки», а `paste` доезжает до программы только
@@ -369,9 +375,15 @@ local function run(options: any)
     -- симптома — по ssh его не найти глазами.
     local frame_cost: any = {}
     local menu_hits: any = {}
+    -- Таймер наведения в меню: есть только пока каскад ждёт своей смены,
+    -- см. `hover_menu`. Объявлен здесь, потому что цикл кладёт его в select.
+    local hover_timer: any = nil
     local clock = ""
 
     local quitting = false
+    -- Экран прощания просят только через «Завершение работы» в меню: ctrl+q
+    -- — аварийный выход, ему пять секунд чёрного экрана ни к чему.
+    local farewell_wanted = false
 
     local function desktop_height() return math.max(1, desktop_last - desktop_top + 1) end
 
@@ -407,7 +419,7 @@ local function run(options: any)
         if from == nil then return nil end
         local key = tostring(from)
         for _, window in ipairs(windows) do
-            if tostring(window.pid) == key then return window end
+            if tostring(window.pid) == key or tostring(window.state_pid) == key then return window end
         end
         return nil
     end
@@ -578,6 +590,16 @@ local function run(options: any)
             for index = 1, room do cut[index] = rows[index] end
             rows = cut
         end
+        if type(chrome.content_colors) == "function" then
+            local defaults: any = chrome.content_colors(window)
+            if type(defaults) == "table" then
+                canvas:put_rows(x, y, rows :: {string}, span, {
+                    foreground = type(defaults.foreground) == "string" and tostring(defaults.foreground) or nil,
+                    background = type(defaults.background) == "string" and tostring(defaults.background) or nil,
+                })
+                return
+            end
+        end
         canvas:put_rows(x, y, rows :: {string}, span)
     end
 
@@ -630,7 +652,12 @@ local function run(options: any)
             end
 
             for _, window in ipairs(windows) do
-                if not window.minimized then put_content(window) end
+                if not window.minimized then
+                    if type(chrome.window_background) == "function" then
+                        chrome.window_background(canvas, window)
+                    end
+                    put_content(window)
+                end
             end
         end
 
@@ -750,8 +777,16 @@ local function run(options: any)
             window_type = spec.window_type
         end
 
-        local w = clamp(spec.w or math.floor(width * 0.6), MIN_W, width)
-        local h = clamp(spec.h or math.floor(desktop_height() * 0.7), MIN_H, desktop_height())
+        -- Размер: у окна с фиксированным размером — ТОЛЬКО из записи, что бы
+        -- ни просил открывающий; иначе часы, открытые с панели задач без
+        -- размера, встали бы во весь стол с диалогом в углу. У остальных —
+        -- просьба открывающего, потом запись, потом умолчание композитора.
+        local declared_w = declared and tonumber(declared.w) or nil
+        local declared_h = declared and tonumber(declared.h) or nil
+        local fixed = declared ~= nil and declared.resizable == false
+        local w = clamp((fixed and declared_w) or spec.w or declared_w or math.floor(width * 0.6), MIN_W, width)
+        local h = clamp((fixed and declared_h) or spec.h or declared_h or math.floor(desktop_height() * 0.7),
+            MIN_H, desktop_height())
         -- Каскад, чтобы новое окно не легло ровно на предыдущее и не
         -- выглядело как отсутствие результата.
         local step = (#windows % 6) * 2
@@ -776,8 +811,13 @@ local function run(options: any)
         -- своим узким актором. Композитор ни того, ни другого не исполняет —
         -- он несёт состояние от поставщика к теме.
         local content = declared and declared.content or programs.DEFAULT_CONTENT
+        local render_ref = declared and declared.render or nil
+        local state_ref = declared and declared.state or nil
+        if PIXELS and declared and declared.pixel_render
+            and type(chrome.renders) == "function" and chrome.renders(declared.pixel_render) then
+            content, render_ref, state_ref = "pixels", declared.pixel_render, declared.pixel_state
+        end
         if content == "pixels" then
-            local render_ref = declared and declared.render or nil
             if not render_ref then
                 return nil, "окно " .. entry .. " объявило содержимое видом, "
                     .. "но не назвало render — рисовать его нечем"
@@ -787,7 +827,6 @@ local function run(options: any)
                     .. "мёртвая ссылка на отрисовку молчит до первого открытия"
             end
 
-            local state_ref = declared and declared.state or nil
             if state_ref and not registry.get(state_ref) then
                 return nil, "окно " .. entry .. ": записи " .. state_ref .. " нет — "
                     .. "поставщик состояния объявлен, но не существует"
@@ -803,7 +842,9 @@ local function run(options: any)
                     or (declared and declared.title or entry),
                 content = content,
                 render = render_ref,
+                image = spec.image or (declared and declared.image),
                 state_ref = state_ref,
+                resizable = declared == nil or declared.resizable ~= false,
                 -- Состояния ещё нет: вид рисуется пустым и ГОВОРИТ, что ждёт,
                 -- а не показывает вчерашнее и не висит.
                 waiting = state_ref ~= nil,
@@ -822,8 +863,13 @@ local function run(options: any)
                 -- каждый кадр значило бы читать реестр шестьдесят раз в
                 -- секунду ради списка, который меняется раз в час, — и ждать
                 -- чужой процесс, пока стоит весь стол.
-                local state_pid, serr = process.spawn_monitored(tostring(state_ref),
-                    WINDOW_HOST, SERVICE_NAME, tostring(view_window.id))
+                -- Args retain their position; geometry is a separate fourth argument.
+                local state_pid, serr = process.with_context({[window_api.CONTEXT_KEY] = SERVICE_NAME})
+                    :spawn_monitored(tostring(state_ref), WINDOW_HOST, SERVICE_NAME, tostring(view_window.id),
+                        type(spec.args) == "string" and spec.args ~= "" and spec.args or nil, {
+                            width = w - FRAME_W, height = h - FRAME_H,
+                            cell_w = cell_w, cell_h = cell_h,
+                        })
                 if not state_pid then
                     return nil, "поставщик состояния не запустился: " .. tostring(serr)
                 end
@@ -851,7 +897,7 @@ local function run(options: any)
         -- команду. Одно поле на оба смысла читалось бы как «команда», и окно
         -- подробностей открывали бы строкой «/bin/bash».
         local argument = type(spec.args) == "string" and spec.args ~= ""
-            and spec.args or command
+            and spec.args or (entry == PTY_WINDOW and command or nil)
 
         -- Имя композитора едет окну в контексте процесса: под второй
         -- оболочкой десктоп зарегистрирован своим именем, и окно, знающее
@@ -877,8 +923,12 @@ local function run(options: any)
             -- просто след: кто её запустил.
             opened_by = opener and opener.id or nil,
             content = content,
+            image = spec.image or (declared and declared.image),
+            -- Запись сказала «размер фиксирован» — окно не тянется за угол и
+            -- не разворачивается; тема по этому же полю убирает кнопку.
+            resizable = declared == nil or declared.resizable ~= false,
             title = type(spec.title) == "string" and spec.title ~= "" and spec.title
-                or (entry == PTY_WINDOW and command or entry),
+                or (entry == PTY_WINDOW and command or (declared and declared.title or entry)),
             command = command,
             x = x, y = y, w = w, h = h,
             view = view, updates = updates, pid = pid,
@@ -913,11 +963,12 @@ local function run(options: any)
         -- его окно попросили закрыться.
         for _, child in ipairs(children_of(window.id)) do close_window(child) end
 
-        -- У вида процесса нет: ждать нечего и гасить нечего, кроме поставщика
-        -- состояния — он живёт при окне и вместе с ним уходит.
+        -- Both transports receive close and the same grace period for cleanup.
         if window.content == "pixels" then
-            if window.state_pid then process.terminate(tostring(window.state_pid)) end
-            forget(window)
+            if window.state_pid then
+                process.send(tostring(window.state_pid), "window.input", {id = window.id, event = {type = "close"}})
+                window.deadline = time.after(CLOSE_GRACE)
+            else forget(window) end
             return
         end
 
@@ -930,12 +981,37 @@ local function run(options: any)
     end
 
     forget = function(window)
+        if type(chrome.forget) == "function" then chrome.forget(window.id) end
         local index = index_of(window.id)
         if index > 0 then table.remove(windows, index) end
         if window.view then window.view:close() end
         -- Окно могло умереть само, не дождавшись вежливого закрытия: его
         -- диалоги остались бы на столе привязанными к номеру, которого нет.
         for _, child in ipairs(children_of(window.id)) do close_window(child) end
+    end
+
+    local function request_quit()
+        quitting = true
+        menu = nil
+        drag.active = false
+        -- Closing a view can remove it and its children synchronously.
+        local closing = {}
+        for _, window in ipairs(windows) do closing[#closing + 1] = window end
+        for index = #closing, 1, -1 do close_window(closing[index]) end
+    end
+
+    local function activate_menu_item(item: any)
+        if item.action == "quit" then
+            farewell_wanted = true
+            request_quit()
+            return
+        end
+        local window, err = open_window({
+            entry = item.entry, title = item.title, w = item.w, h = item.h,
+            args = item.args, window_type = item.window_type, image = item.image,
+        }, nil)
+        if window then raise(window)
+        else notice = "не открылось: " .. tostring(err) end
     end
 
     local function resize_window(window, w: any, h: any)
@@ -947,10 +1023,20 @@ local function run(options: any)
         -- тема рисует в следующем кадре.
         if window.view then
             window.view:resize(window.w - FRAME_W, window.h - FRAME_H)
+        elseif window.state_pid then
+            process.send(tostring(window.state_pid), "window.input", {id = window.id, event = {
+                type = "resize", width = window.w - FRAME_W, height = window.h - FRAME_H,
+                cell_w = cell_w, cell_h = cell_h,
+            }})
         end
     end
 
     local function toggle_maximize(window)
+        -- Окно с фиксированным размером не разворачивается: его раскладка
+        -- посчитана под один размер, и во весь экран оно показало бы серое
+        -- поле вокруг кнопок. Тема кнопку не рисует; alt+клавиша и команда
+        -- снаружи упираются сюда же, чтобы обходного пути не было.
+        if window.resizable == false then return end
         if window.maximized then
             local saved = window.saved
             window.maximized = false
@@ -965,7 +1051,7 @@ local function run(options: any)
         end
     end
 
-    local function send_to(window, event)
+    local function send_to(window: any, event)
         if not window or not window.ready or window.closing then return false end
 
         -- Ввод в окно-вид уходит его поставщику состояния: живой части у
@@ -1022,7 +1108,90 @@ local function run(options: any)
         return button and button.id or nil
     end
 
+    local client_capture: any = nil
+    local function client_pointer(window: any, event: any)
+        return send_to(window, {type = "mouse", action = event.action, button = event.button,
+            x = event.x - window.x - insets.left + 1, y = event.y - window.y - insets.top + 1,
+            alt = event.alt, ctrl = event.ctrl, shift = event.shift})
+    end
+    -- Наведение в открытом меню. Строка под мышью становится выбранной сразу,
+    -- а каскад — папка раскрывается, подменю глубже строки закрывается — через
+    -- HOVER_DELAY: «иду в подменю» и «ушёл на соседнюю строку» в первом
+    -- событии движения одинаковы и различаются только тем, где мышь окажется
+    -- через мгновение.
+    --
+    -- Курсор живёт на самом глубоком раскрытом уровне — так же, как у
+    -- стрелок. Поэтому папка, которая уже раскрыта, курсора не берёт: выбор
+    -- идёт в её панели, а сама она нарисована раскрытой.
+    local function menu_spot_at(x, y)
+        for _, spot in ipairs(menu_hits) do
+            if spot.slot ~= nil and y >= spot.row and y <= (spot.bottom_row or spot.row)
+                and x >= spot.from and x <= spot.to then
+                return spot
+            end
+        end
+        return nil
+    end
+
+    local function same_path(left: any, right: any)
+        if type(left) ~= "table" or type(right) ~= "table" then return false end
+        if #left ~= #right then return false end
+        for index = 1, #left do
+            if left[index] ~= right[index] then return false end
+        end
+        return true
+    end
+
+    local function hover_menu(x, y)
+        local spot: any = menu_spot_at(x, y)
+        if spot == nil then return end
+        local level = math.tointeger(spot.level) or 1
+        local open: any = type(menu.open) == "table" and menu.open or {}
+        local folder = type(spot.open) == "table"
+        -- Что должно быть раскрыто, пока мышь над этой строкой: папка — она
+        -- сама, пункт — всё до его уровня.
+        local wanted: any = {}
+        if folder then
+            wanted = spot.open
+        else
+            for index = 1, level - 1 do wanted[index] = open[index] end
+        end
+        if same_path(open, wanted) then
+            menu.pending = nil
+            hover_timer = nil
+            if not folder
+                and (math.tointeger(menu.cursor) or 0) ~= (math.tointeger(spot.slot) or 0) then
+                menu.cursor = spot.slot
+                draw()
+            end
+            return
+        end
+        local pending: any = menu.pending
+        if pending and same_path(pending.open, wanted) then return end
+        -- Папка, раскрытая наведением, в подменю ничего не выбирает: курсор
+        -- 0 — «строки нет», enter на нём молчит, стрелка вниз ведёт на первую.
+        menu.pending = {open = wanted, cursor = folder and 0 or spot.slot}
+        hover_timer = time.after(HOVER_DELAY)
+    end
+
+    local function settle_hover()
+        hover_timer = nil
+        if menu == nil then return end
+        local pending: any = menu.pending
+        menu.pending = nil
+        if pending == nil then return end
+        menu.open = pending.open
+        menu.cursor = pending.cursor
+        draw()
+    end
+
     local function handle_mouse(event)
+        if client_capture and (event.action == "motion" or event.action == "release") then
+            local target = find(client_capture)
+            if target and not target.minimized then client_pointer(target, event) end
+            if event.action == "release" or not target then client_capture = nil end
+            return
+        end
         if event.action == "motion" and drag.active and drag.mode == "icon" then
             local item = desktop_item(drag.id)
             if not item then drag.active = false; return end
@@ -1042,6 +1211,11 @@ local function run(options: any)
                 resize_window(window, event.x - window.x + 1, event.y - window.y + 1)
             end
             draw()
+            return
+        end
+
+        if event.action == "motion" then
+            if menu and not drag.active and not quitting then hover_menu(event.x, event.y) end
             return
         end
 
@@ -1078,14 +1252,55 @@ local function run(options: any)
             return
         end
 
-        if event.action ~= "press" then return end
+        if event.action == "wheel" then
+            if menu or quitting then return end
+            local window = hit(event.x, event.y)
+            if window and event.x >= window.x + insets.left
+                and event.x < window.x + window.w - insets.right
+                and event.y >= window.y + insets.top
+                and event.y < window.y + window.h - insets.bottom then
+                send_to(window, {
+                    type = "mouse", action = "wheel", button = event.button,
+                    x = event.x - window.x - insets.left + 1,
+                    y = event.y - window.y - insets.top + 1,
+                    shift = event.shift, alt = event.alt, ctrl = event.ctrl,
+                })
+            end
+            return
+        end
+        if event.action ~= "press" or quitting then return end
+
+        -- Хром слушает только ЛЕВУЮ кнопку: правая по заголовку закрывала
+        -- окно, по «Пуску» открывала меню. Правая и средняя уходят окну под
+        -- указателем, в его тело, — там их ждут программы.
+        if event.button ~= "left" then
+            if menu then return end
+            local window = hit(event.x, event.y)
+            if window and event.x >= window.x + insets.left
+                and event.x < window.x + window.w - insets.right
+                and event.y >= window.y + insets.top
+                and event.y < window.y + window.h - insets.bottom then
+                send_to(window, {
+                    type = "mouse", action = event.action, button = event.button,
+                    x = event.x - window.x - (math.tointeger(insets.left) or 1) + 1,
+                    y = event.y - window.y - (math.tointeger(insets.top) or 1) + 1,
+                    alt = event.alt, ctrl = event.ctrl, shift = event.shift,
+                })
+            end
+            return
+        end
 
         -- Открытое меню забирает клик целиком: попал в пункт — открываем,
         -- мимо — закрываем. Иначе клик «мимо меню» уходил бы в окно под ним,
         -- и меню оставалось бы висеть поверх результата.
         if menu then
+            -- Щелчок решает сам: каскад, которого ждало наведение, не должен
+            -- смениться следом за ним.
+            menu.pending = nil
+            hover_timer = nil
             for _, spot in ipairs(menu_hits) do
-                if event.y == spot.row and event.x >= spot.from and event.x <= spot.to then
+                if event.y >= spot.row and event.y <= (spot.bottom_row or spot.row)
+                    and event.x >= spot.from and event.x <= spot.to then
                     -- Папка несёт ПОЛНЫЙ путь от корня, поэтому композитору
                     -- не надо разбирать дерево и помнить, где он находится:
                     -- он кладёт путь и рисует снова.
@@ -1098,11 +1313,7 @@ local function run(options: any)
                     if item then
                         -- Меню, ярлык и alt+n — это сам композитор, а не
                         -- окно: открытому здесь принадлежать некому.
-                        local window = open_window({
-                            entry = item.entry, title = item.title, w = item.w, h = item.h,
-                            window_type = item.window_type,
-                        }, nil)
-                        if window then raise(window) end
+                        activate_menu_item(item)
                     end
                     menu = nil
                     draw()
@@ -1117,7 +1328,8 @@ local function run(options: any)
         -- Полосы хрома: кнопка окна поднимает и разворачивает его, кнопка
         -- меню открывает и закрывает каталог.
         for _, spot in ipairs(bar_hits) do
-            if event.y == spot.row and event.x >= spot.from and event.x <= spot.to then
+            if event.y >= spot.row and event.y <= (spot.bottom_row or spot.row)
+                    and event.x >= spot.from and event.x <= spot.to then
                 if spot.id then
                     local window = find(spot.id)
                     if window then
@@ -1131,6 +1343,21 @@ local function run(options: any)
                     else
                         local items, failure = catalog()
                         menu = {items = items, failure = failure, open = {}, cursor = 1}
+                    end
+                    draw()
+                elseif type(spot.entry) == "string" and spot.entry ~= "" then
+                    local existing = nil
+                    for _, candidate in ipairs(windows) do
+                        if candidate.entry == spot.entry and not candidate.closing then
+                            existing = candidate
+                            break
+                        end
+                    end
+                    if existing then
+                        existing.minimized = false
+                        raise(existing)
+                    else
+                        activate_menu_item(spot)
                     end
                     draw()
                 end
@@ -1202,17 +1429,22 @@ local function run(options: any)
             return
         end
 
-        -- Правый нижний угол рамки тянет размер.
-        if event.x == window.x + window.w - 1 and event.y == window.y + window.h - 1 then
+        -- Правый нижний угол рамки тянет размер — если запись это разрешила.
+        if window.resizable ~= false
+            and event.x == window.x + window.w - 1 and event.y == window.y + window.h - 1 then
             drag = {active = true, id = window.id, mode = "resize", dx = 0, dy = 0}
             draw()
             return
         end
 
         -- Тело окна: клик уходит внутрь, в координатах самого окна.
+        if event.x < window.x + insets.left or event.x >= window.x + window.w - insets.right
+            or event.y < window.y + insets.top or event.y >= window.y + window.h - insets.bottom then return end
+        client_capture = window.id
         send_to(window, {
             type = "mouse", action = event.action, button = event.button,
-            x = event.x - window.x, y = event.y - window.y,
+            x = event.x - window.x - (math.tointeger(insets.left) or 1) + 1,
+            y = event.y - window.y - (math.tointeger(insets.top) or 1) + 1,
             alt = event.alt, ctrl = event.ctrl, shift = event.shift,
         })
         draw()
@@ -1305,11 +1537,7 @@ local function run(options: any)
     local function open_menu_item(spot: any)
         local item: any = menu.items[math.tointeger(spot.index) or 0]
         if not item then return false end
-        local window = open_window({
-            entry = item.entry, title = item.title, w = item.w, h = item.h,
-            window_type = item.window_type,
-        }, nil)
-        if window then raise(window) end
+        activate_menu_item(item)
         return true
     end
 
@@ -1395,8 +1623,17 @@ local function run(options: any)
     end
 
     local function handle_key(event)
+        if event.ctrl and event.key == "q" then
+            request_quit()
+            if #windows == 0 then return "quit" end
+            draw()
+            return "handled"
+        end
+        if quitting then return "handled" end
         if menu then
-            if event.key_type == "esc" or (event.ctrl and event.key == "q") then
+            menu.pending = nil
+            hover_timer = nil
+            if event.key_type == "esc" then
                 menu = nil
                 draw()
                 return "handled"
@@ -1428,9 +1665,12 @@ local function run(options: any)
                 local spot = menu_cursor_spot()
                 if spot == nil then
                     -- Тема не пометила выбранную строку: enter молчал бы, а
-                    -- молчащая клавиша неотличима от сломанного меню.
-                    notice = "тема не отметила выбранную строку меню"
-                    draw()
+                    -- молчащая клавиша неотличима от сломанного меню. Курсор
+                    -- 0 — другое: строки не выбрано, папку раскрыло наведение.
+                    if (math.tointeger(menu.cursor) or 0) > 0 then
+                        notice = "тема не отметила выбранную строку меню"
+                        draw()
+                    end
                 elseif type(spot.open) == "table" then
                     menu.open = spot.open
                     menu.cursor = 1
@@ -1443,14 +1683,6 @@ local function run(options: any)
 
             -- Открытое меню забирает ввод целиком: иначе клавиша уехала бы в
             -- окно под ним.
-            return "handled"
-        end
-
-        if event.ctrl and event.key == "q" then
-            quitting = true
-            for index = #windows, 1, -1 do close_window(windows[index]) end
-            if #windows == 0 then return "quit" end
-            draw()
             return "handled"
         end
 
@@ -1508,6 +1740,7 @@ local function run(options: any)
     local function describe(window)
         return {
             id = window.id, entry = window.entry, title = window.title, command = window.command,
+            image = window.image,
             window_type = window.window_type,
             opened_by = window.opened_by,
             -- Чем рисуется содержимое и дождалось ли оно данных. Снаружи это
@@ -1516,6 +1749,14 @@ local function run(options: any)
             content = window.content,
             waiting = window.waiting == true,
             state_revision = window.state_revision,
+            -- Подпись вида (`content_state.caption`) — то немногое, что вид
+            -- рассказывает о себе словами. Снаружи это единственный способ
+            -- узнать, что прокрутка или раскрытие дошли до поставщика, не
+            -- глядя на пиксели.
+            caption = type(window.content_state) == "table"
+                and type(window.content_state.caption) == "string"
+                and window.content_state.caption or nil,
+            resizable = window.resizable ~= false,
             x = window.x, y = window.y, width = window.w, height = window.h,
             ready = window.ready, minimized = window.minimized,
             maximized = window.maximized, closing = window.closing,
@@ -1636,6 +1877,10 @@ local function run(options: any)
                 -- нельзя — пустое меню и меню без папок на экране одинаковы.
                 menu_choices = menu_choices_count(),
                 menu_folders = menu_folders_count(),
+                -- Номер выбранной строки на текущем уровне; 0 — не выбрано.
+                -- Без него «наведение не выделило» и «выделило, а тема не
+                -- нарисовала» — один и тот же кадр.
+                menu_cursor = menu and (math.tointeger(menu.cursor) or 0) or nil,
                 -- Цена последнего кадра: изменившиеся строки, отправленные
                 -- растры, байты. Мера для §8 FR-005 и единственный способ
                 -- заметить, что хром порезан неверно.
@@ -1683,6 +1928,10 @@ local function run(options: any)
             reply({ok = true, window = describe(window)}, to, topic)
             return true
         elseif topic == "desktop.resize" then
+            if window.resizable == false then
+                return refuse("окно " .. window.id .. " объявило фиксированный размер",
+                    to, topic, from)
+            end
             resize_window(window, body.w, body.h)
             reply({ok = true, window = describe(window)}, to, topic)
             return true
@@ -1705,6 +1954,7 @@ local function run(options: any)
                     .. " принимается только от его поставщика", to, topic, from)
             end
             window.content_state = body.state
+            if type(body.title) == "string" and body.title ~= "" then window.title = body.title end
             window.waiting = false
             window.state_revision = (math.tointeger(window.state_revision) or 0) + 1
             reply({ok = true, revision = window.state_revision}, to, topic)
@@ -1771,6 +2021,7 @@ local function run(options: any)
             inbox:case_receive(),
             ticker:case_receive(),
         }
+        if hover_timer then cases[#cases + 1] = hover_timer:case_receive() end
         local watched = {}
         for _, window in ipairs(windows) do
             -- У окна-вида кадров нет: их некому публиковать.
@@ -1779,6 +2030,7 @@ local function run(options: any)
                 watched[#watched + 1] = window
             end
             if window.deadline then
+                if not window.updates then watched[#watched + 1] = window end
                 cases[#cases + 1] = window.deadline:case_receive()
             end
         end
@@ -1792,6 +2044,10 @@ local function run(options: any)
         if selected.channel == ticker then
             ticker = time.after(CLOCK_TICK)
             if tick_clock() then draw() end
+            handled = true
+        end
+        if hover_timer ~= nil and selected.channel == hover_timer then
+            settle_hover()
             handled = true
         end
 
@@ -1811,7 +2067,7 @@ local function run(options: any)
                 break
             end
             if window.deadline and selected.channel == window.deadline then
-                process.terminate(tostring(window.pid))
+                process.terminate(tostring(window.state_pid or window.pid))
                 window.deadline = nil
                 handled = true
                 break
@@ -1843,6 +2099,7 @@ local function run(options: any)
                         -- Вид, застывший на последнем состоянии, выглядит
                         -- живым и врёт тем убедительнее, чем дольше висит.
                         if window.state_pid ~= nil and tostring(window.state_pid) == gone then
+                            if window.closing then forget(window); break end
                             window.state_pid = nil
                             window.waiting = true
                             window.ready = false
@@ -1879,9 +2136,10 @@ local function run(options: any)
                     draw()
                 elseif event.type == "mouse" then
                     handle_mouse(event)
+                    if quitting and #windows == 0 then break end
                 elseif event.type == "key" then
                     local verdict = handle_key(event)
-                    if verdict == "quit" then break end
+                    if verdict == "quit" or (quitting and #windows == 0) then break end
                     if verdict == "forward" and not quitting then
                         send_to(focused(), event)
                     end
@@ -1892,8 +2150,29 @@ local function run(options: any)
         end
     end
 
+    -- Прощание: «Теперь питание компьютера можно отключить». Рисует тема,
+    -- если умеет (`chrome.farewell`), держится `chrome.FAREWELL_HOLD` секунд
+    -- (по умолчанию пять), ввод за это время съедается — экран не для
+    -- взаимодействия. Тема без прощания выходит сразу, как раньше.
+    if farewell_wanted and #windows == 0 and type(chrome.farewell) == "function" then
+        canvas:clear(" ")
+        local painted = chrome.farewell(canvas, width, height)
+        local images: any = nil
+        if PIXELS and type(painted) == "table" then
+            images = pixels.frame(canvas, painted)
+        end
+        assert(out:present(canvas:rows(), {images = images}))
+        local hold = tonumber(chrome.FAREWELL_HOLD) or 5
+        local deadline = time.after(string.format("%dms", math.floor(hold * 1000)))
+        while true do
+            local picked = channel.select({deadline:case_receive(), events:case_receive()})
+            if not picked.ok or picked.channel == deadline then break end
+        end
+    end
+
     for _, window in ipairs(windows) do
-        window.view:close()
+        if window.view then window.view:close() end
+        if window.state_pid then process.terminate(tostring(window.state_pid)) end
     end
     process.registry.unregister(SERVICE_NAME)
     assert(tty.mouse(false))

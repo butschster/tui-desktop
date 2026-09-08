@@ -62,6 +62,9 @@ local function handler()
         height = tonumber(body.height) or 12,
         source = source,
         modules = apps.normalize_modules(body.modules),
+        -- Папка меню «Пуск», как `meta.group` у записи из файла:
+        -- "Программы/Контент-машина". Пусто — оболочка решает сама.
+        group = type(body.group) == "string" and body.group or "",
     }
 
     local existing = repo.get(name)
@@ -88,6 +91,7 @@ local function handler()
         name = name,
         title = window.title,
         modules = window.modules,
+        group = window.group,
         replaced = existing ~= nil,
     })
 end

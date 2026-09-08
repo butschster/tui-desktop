@@ -46,6 +46,34 @@ KEYS = {
 }
 
 
+def mouse(col, row, button=0, press=True):
+    """Событие мыши в формате SGR 1006 — тот, что включает композитор.
+
+    Без этого пробник умеет только клавиатуру, и тогда оболочка обрастает
+    клавиатурными путями, которых в настоящем Windows нет: интерфейс начинает
+    подстраиваться под ограничение инструмента. Координаты — единичные, как на
+    экране.
+    """
+    tail = b"M" if press else b"m"
+    return b"\x1b[<%d;%d;%d" % (button, col, row) + tail
+
+
+class Ordered(argparse.Action):
+    """Складывает шаги в ОДИН список в том порядке, в каком их дали.
+
+    Раньше сценарий собирался по типам — сначала все --send, потом ресайзы,
+    потом клавиши, — и «щёлкнуть, потом набрать» выразить было нечем:
+    получалось «набрать, потом щёлкнуть», молча и не тем.
+    """
+
+    def __call__(self, parser, namespace, value, option_string=None):
+        steps = getattr(namespace, "steps", None)
+        if steps is None:
+            steps = []
+            setattr(namespace, "steps", steps)
+        steps.append((self.dest, value))
+
+
 class Screen:
     """Минимальный экран: позиционирование, печать, стирание до конца строки."""
 
@@ -118,13 +146,23 @@ def main():
                         help="сколько ждать после последнего шага, секунд "
                              "(по умолчанию — одна пауза; выход всего рантайма "
                              "занимает заметно дольше)")
-    parser.add_argument("--send", action="append", default=[],
+    parser.add_argument("--send", action=Ordered, default=[],
                         help="набрать строку (повторяемо)")
-    parser.add_argument("--send-key", action="append", default=[],
+    parser.add_argument("--send-key", action=Ordered, default=[],
                         help="послать клавишу: " + ", ".join(sorted(KEYS)))
     parser.add_argument("--expect", action="append", default=[],
                         help="подстрока, которая обязана появиться на экране")
-    parser.add_argument("--resize", action="append", default=[],
+    parser.add_argument("--click", action=Ordered, default=[],
+                        help="щёлкнуть мышью в COL,ROW (единичные координаты)")
+    parser.add_argument("--dblclick", action=Ordered, default=[],
+                        help="двойной щелчок в COL,ROW")
+    parser.add_argument("--move", action=Ordered, default=[],
+                        help="провести мышь в COL,ROW без нажатия (SGR 1003, кнопка 35)")
+    parser.add_argument("--wheel", action=Ordered, default=[],
+                        help="колёсико в COL,ROW,up|down (SGR 1006, кнопки 64 и 65)")
+    parser.add_argument("--drag", action=Ordered, default=[],
+                        help="перетаскивание левой кнопкой из COL1,ROW1 в COL2,ROW2: нажатие, движение по строкам, отпускание")
+    parser.add_argument("--resize", action=Ordered, default=[],
                         help="сменить размер терминала на COLSxROWS (повторяемо)")
     parser.add_argument("--raw", help="файл для сырого потока")
     parser.add_argument("cmd", nargs=argparse.REMAINDER)
@@ -142,22 +180,64 @@ def main():
     screen = Screen(opts.cols, opts.rows)
     raw = open(opts.raw, "wb") if opts.raw else None
 
-    # Сценарий: [(момент, что послать)]. Первый шаг — после boot.
+    # Сценарий: [(момент, что послать)] в порядке, в каком шаги дали в
+    # командной строке. Первый шаг — после boot.
+    def point(spec, what):
+        match = re.fullmatch(r"\s*(\d+)\s*,\s*(\d+)\s*", spec)
+        if not match:
+            parser.error(what + " задаётся как COL,ROW, получено: " + spec)
+        return int(match.group(1)), int(match.group(2))
+
     script = []
     moment = opts.boot
-    for text in opts.send:
-        script.append((moment, text.encode()))
-        moment += opts.settle
-    for spec in opts.resize:
-        match = re.fullmatch(r"(\d+)x(\d+)", spec)
-        if not match:
-            parser.error("размер задаётся как COLSxROWS, получено: " + spec)
-        script.append((moment, ("resize", int(match.group(1)), int(match.group(2)))))
-        moment += opts.settle
-    for key in opts.send_key:
-        if key not in KEYS:
-            parser.error("неизвестная клавиша: " + key)
-        script.append((moment, KEYS[key]))
+    for kind, value in getattr(opts, "steps", []):
+        if kind == "send":
+            script.append((moment, value.encode()))
+        elif kind == "send_key":
+            if value not in KEYS:
+                parser.error("неизвестная клавиша: " + value)
+            script.append((moment, KEYS[value]))
+        elif kind == "click":
+            col, row = point(value, "щелчок")
+            script.append((moment, mouse(col, row, press=True) + mouse(col, row, press=False)))
+        elif kind == "dblclick":
+            col, row = point(value, "двойной щелчок")
+            # Два полных щелчка подряд одним куском: двойной определяется по
+            # сроку между ними, и пауза сценария между шагами его развалила бы.
+            single = mouse(col, row, press=True) + mouse(col, row, press=False)
+            script.append((moment, single + single))
+        elif kind == "move":
+            col, row = point(value, "движение")
+            # Движение без кнопки — код 35 (32 «движение» + 3 «кнопки нет»);
+            # рантайм включает режим 1003, поэтому терминал шлёт его и так.
+            script.append((moment, mouse(col, row, button=35, press=True)))
+        elif kind == "drag":
+            match = re.fullmatch(r"(\d+),(\d+),(\d+),(\d+)", value)
+            if not match:
+                parser.error("перетаскивание задаётся как COL1,ROW1,COL2,ROW2, получено: " + value)
+            c1, r1, c2, r2 = (int(match.group(i)) for i in range(1, 5))
+            # Одним куском: нажатие, движение с зажатой кнопкой (SGR: кнопка + 32)
+            # по каждой промежуточной строке, отпускание в конечной точке.
+            chunk = mouse(c1, r1, press=True)
+            steps = max(abs(r2 - r1), abs(c2 - c1), 1)
+            for i in range(1, steps + 1):
+                col = c1 + (c2 - c1) * i // steps
+                row = r1 + (r2 - r1) * i // steps
+                chunk += mouse(col, row, button=32, press=True)
+            chunk += mouse(c2, r2, press=False)
+            script.append((moment, chunk))
+        elif kind == "wheel":
+            match = re.fullmatch(r"(\d+),(\d+),(up|down)", value)
+            if not match:
+                parser.error("колёсико задаётся как COL,ROW,up|down, получено: " + value)
+            button = 64 if match.group(3) == "up" else 65
+            # У колёсика нет отпускания: терминал шлёт только нажатие.
+            script.append((moment, mouse(int(match.group(1)), int(match.group(2)), button=button, press=True)))
+        elif kind == "resize":
+            match = re.fullmatch(r"(\d+)x(\d+)", value)
+            if not match:
+                parser.error("размер задаётся как COLSxROWS, получено: " + value)
+            script.append((moment, ("resize", int(match.group(1)), int(match.group(2)))))
         moment += opts.settle
 
     deadline = time.time() + moment + (opts.settle if opts.tail is None else opts.tail)

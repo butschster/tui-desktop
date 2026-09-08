@@ -9,6 +9,10 @@ workspace:
   replacements:
     butschster/tui-desktop: ..
 override:
+  "butschster.tui_desktop:exec:default_env.HOME": "${env:HOME}"
+  "butschster.tui_desktop:exec:default_env.PATH": "${env:PATH}"
+  # Menu navigation tests use their own fixture programs.
+  "butschster.tui_desktop.desktop:window_pty:meta.in_menu": false
   "butschster.tui_desktop.security:user_security_scope:data.default": app:user
 vars:
   pg_host: localhost

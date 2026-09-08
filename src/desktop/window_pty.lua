@@ -12,7 +12,9 @@ local exec = require("exec")
 local tty = require("tty")
 
 local EXECUTOR = "butschster.tui_desktop:exec"
-local DEFAULT_COMMAND = "/bin/bash --noprofile --norc"
+-- Interactive Bash reads ~/.bashrc; the host config supplies HOME and PATH
+-- on the dedicated PTY executor (exec.native does not inherit OS variables).
+local DEFAULT_COMMAND = "/bin/bash -i"
 
 local function main(command)
     -- Подписка до старта: start() эмитит первое событие, и подписчик должен

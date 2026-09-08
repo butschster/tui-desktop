@@ -203,3 +203,12 @@ searching registry declarations.
 - No credential-like material or generated local state is tracked.
 - Documentation describes any new public contract and links resolve.
 - The change has one clear owner and contains no compatibility residue.
+
+## Window SDK
+
+When changing or adding a window, use the shared
+window SDK (`../windows-module/docs/sdk.md`) and
+window-app skill (`../windows-module/skills/wippy-window-app/SKILL.md`).
+The compositor owns the outer window; applications use the common input,
+geometry, scroll and lifecycle contracts. Preserve the declarative path:
+registry metadata plus components must not need per-app shell edits.

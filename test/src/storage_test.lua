@@ -103,6 +103,22 @@ local function define_tests()
                 "библиотека десктопа подключается каждому окну")
         end)
 
+        test.it("папку меню несёт тем же полем, что запись из файла, а пустую не пишет", function()
+            -- «Не названа» и «названа пустой» для оболочки — разные ответы:
+            -- безымянное окно она кладёт куда решит сама, пустое — на корень.
+            -- Мастерская за окно не решает, поэтому пусто не доезжает вовсе.
+            local placed = apps.build_entry({
+                name = "probe", title = "Проба", width = 10, height = 4,
+                source = SOURCE, modules = {}, group = "Программы/Контент-машина",
+            })
+            test.eq(placed.meta.group, "Программы/Контент-машина")
+            local unnamed = apps.build_entry({
+                name = "probe", title = "Проба", width = 10, height = 4,
+                source = SOURCE, modules = {}, group = "",
+            })
+            test.is_nil(unnamed.meta.group, "пустая папка не должна доезжать до записи")
+        end)
+
         test.it("всегда добавляет tty и channel", function()
             -- Без них окно не нарисуется и не дождётся события: упадёт уже
             -- после того, как человек решит, что оно создано.

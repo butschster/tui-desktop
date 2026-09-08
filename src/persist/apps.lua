@@ -74,16 +74,21 @@ function apps.rejected_modules(requested)
 end
 
 function apps.build_entry(window)
+    local meta: any = {
+        type = apps.WINDOW_TYPE,
+        title = window.title,
+        width = window.width,
+        height = window.height,
+        comment = "Собрано в рантайме; исходник хранится в butschster_tui_desktop_windows.",
+    }
+    -- Папка меню — как у записи из файла, тем же полем. Пустая не пишется
+    -- вовсе: «не названа» и «названа пустой» для оболочки разные ответы,
+    -- и решать за окно, что оно хочет на корень, мастерская не должна.
+    if type(window.group) == "string" and window.group ~= "" then meta.group = window.group end
     return {
         id = apps.entry_id(window.name),
         kind = "process.lua",
-        meta = {
-            type = apps.WINDOW_TYPE,
-            title = window.title,
-            width = window.width,
-            height = window.height,
-            comment = "Собрано в рантайме; исходник хранится в butschster_tui_desktop_windows.",
-        },
+        meta = meta,
         data = {
             source = window.source,
             method = "main",

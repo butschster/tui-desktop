@@ -2,6 +2,28 @@ version: "1.0"
 namespace: butschster.tui_desktop.desktop
 
 entries:
+  - name: input
+    kind: library.lua
+    meta: {comment: "Canonical window keyboard and pointer events."}
+    source: file://input.lua
+
+  - name: geometry
+    kind: library.lua
+    meta: {comment: "Window client rectangles in cells."}
+    source: file://geometry.lua
+
+  - name: text
+    kind: library.lua
+    meta: {comment: "UTF-8 runes, cell counts and clipping — one splitter for every window."}
+    source: file://text.lua
+
+  - name: scroll
+    kind: library.lua
+    meta: {comment: "Bounded scrolling and shared scrollbar geometry."}
+    source: file://scroll.lua
+    imports:
+      geometry: butschster.tui_desktop.desktop:geometry
+
   # butschster.tui_desktop.desktop:chrome
   - name: chrome
     kind: library.lua
@@ -31,6 +53,8 @@ entries:
     meta:
       comment: Что окно может попросить у десктопа — открыть, закрыть, поднять соседнее окно. Имя композитора берётся из контекста процесса, а не из константы.
     source: file://window_api.lua
+    imports:
+      input: butschster.tui_desktop.desktop:input
     modules:
       - process
       # Имя своего композитора окно читает отсюда. Модуль объявлен ЗДЕСЬ, а не
@@ -107,6 +131,12 @@ entries:
   - name: window_pty
     kind: process.lua
     meta:
+      type: tui_desktop.window
+      title: Bash
+      group: Программы
+      image: program
+      width: 80
+      height: 24
       comment: Окно с настоящей программой под PTY. Видит обычный tty-порт и не знает, что оно окно.
     source: file://window_pty.lua
     method: main

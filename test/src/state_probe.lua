@@ -48,6 +48,7 @@ local function main(desktop, window_id)
             local event: any = body.event or {}
             inputs[#inputs + 1] = tostring(event.type) .. ":"
                 .. tostring(event.x) .. "," .. tostring(event.y)
+                .. ":" .. tostring(event.action) .. ":" .. tostring(event.button)
         elseif topic == "probe.report" then
             process.send(tostring(body.reply_to), "probe.state", {
                 desktop = tostring(desktop),

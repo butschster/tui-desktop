@@ -85,7 +85,7 @@ entries:
 
   # Запуск внешних программ для PTY-окон. Без command_whitelist: проверка
   # там — точное совпадение всей строки вместе с аргументами, так что
-  # "/bin/bash" не разрешает "/bin/bash --noprofile --norc". Ограничение
+  # "/bin/bash" не разрешает "/bin/bash -i". Ограничение
   # держит политика.
   - name: exec
     kind: exec.native

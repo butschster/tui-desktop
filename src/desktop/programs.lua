@@ -78,6 +78,21 @@ function programs.content(meta: any)
     return programs.DEFAULT_CONTENT, given
 end
 
+-- resizable(meta) -> можно ли менять размер окна
+--
+-- По умолчанию да: окно с фиксированным размером — то, которое об этом
+-- попросило. Калькулятор и диалог свойств в Windows 95 не тянутся за угол и
+-- не разворачиваются: их раскладка посчитана под один размер, и растянутое
+-- окно показало бы серое поле вокруг кнопок. Строка "false" считается
+-- отказом наравне с булевым — запись приезжает и из YAML, и из JSON.
+function programs.resizable(meta: any)
+    if type(meta) ~= "table" then return true end
+    local given: any = meta.resizable
+    if given == nil then return true end
+    if given == false or given == "false" then return false end
+    return true
+end
+
 local function reference(meta: any, field)
     if type(meta) ~= "table" then return nil end
     local given: any = meta[field]
@@ -109,6 +124,17 @@ function programs.item(record: any)
         content = content,
         render = reference(meta, "render"),
         state = reference(meta, "state"),
+        pixel_render = reference(meta, "pixel_render"),
+        pixel_state = reference(meta, "pixel_state"),
+        image = reference(meta, "image"),
+        -- Фиксированный размер объявляет запись, а не тот, кто открывает:
+        -- иначе один и тот же калькулятор тянулся бы из меню и не тянулся
+        -- бы с ярлыка.
+        resizable = programs.resizable(meta),
+        -- Какие расширения программа открывает (`meta.opens: [txt, png]`).
+        -- Доезжает до пункта как есть: реестр типов собирает оболочка, и
+        -- пункт, потерявший это поле, оставил бы проводник без ассоциаций.
+        opens = type(meta.opens) == "table" and meta.opens or nil,
     }, unknown or odd_content
 end
 

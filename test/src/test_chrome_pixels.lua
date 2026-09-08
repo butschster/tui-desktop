@@ -9,12 +9,21 @@
 local chrome = {}
 
 chrome.pixel = true
+local custom_insets = false
+function chrome.configure_insets()
+    custom_insets = true
+end
+
+function chrome.window_background(canvas, window)
+    if custom_insets then canvas:put(window.x + 2, window.y + 3, "BACKGROUND", 10) end
+end
 
 function chrome.layout(width, height)
     return {top = 1, bottom = 1}
 end
 
 function chrome.window_insets()
+    if custom_insets then return {top = 3, bottom = 1, left = 2, right = 1} end
     return {top = 1, bottom = 1, left = 1, right = 1}
 end
 
@@ -91,6 +100,10 @@ function chrome.paint(state: any, cell_w, cell_h)
         to = chrome.MENU_BUTTON.to, action = "menu",
     }
 
+    if chrome.clock_entry then
+        slots[#slots + 1] = {row = state.height, from = 73, to = 80, entry = chrome.clock_entry}
+    end
+
     -- Меню рисуется, только когда композитор говорит, что оно открыто: его
     -- состояние держит механика, а тема лишь показывает.
     if state.menu then
@@ -118,7 +131,19 @@ function chrome.paint(state: any, cell_w, cell_h)
             end
         else
             -- Раскрытая папка — вторая панель: курсор ходит по ней, потому что
-            -- её `level` больше.
+            -- её `level` больше. Корневая панель при этом НЕ исчезает — как
+            -- у настоящей темы: её строки остаются попаданиями без курсора,
+            -- и наведение на них закрывает подменю.
+            choices[#choices + 1] = {
+                row = chrome.MENU_ROW, from = 2, to = 31,
+                open = {chrome.FOLDER}, level = 1, slot = 1,
+            }
+            for index in ipairs(items) do
+                choices[#choices + 1] = {
+                    row = chrome.MENU_ROW + index, from = 2, to = 31, index = index,
+                    level = 1, slot = index + 1,
+                }
+            end
             for index in ipairs(items) do
                 choices[#choices + 1] = {
                     row = chrome.MENU_ROW + index - 1, from = 34, to = 63, index = index,
@@ -126,6 +151,16 @@ function chrome.paint(state: any, cell_w, cell_h)
                 }
             end
         end
+    end
+
+    -- Two cell rows per target, but one keyboard choice per item.
+    for _, hit in ipairs(slots) do
+        hit.row = state.height - 1
+        hit.bottom_row = state.height
+    end
+    for _, hit in ipairs(choices) do
+        hit.row = chrome.MENU_ROW + (hit.row - chrome.MENU_ROW) * 2
+        hit.bottom_row = hit.row + 1
     end
 
     return {

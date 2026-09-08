@@ -41,6 +41,9 @@ local function to_window(row: any)
         height = tonumber(row.height) or 0,
         source = row.source,
         modules = decode_modules(row.modules),
+        -- Папка меню; пусто — не названа. Колонка появилась миграцией 02,
+        -- поэтому читается с запасом на строку, где её ещё нет.
+        group = type(row.menu_group) == "string" and row.menu_group or "",
         created_at = row.created_at,
         updated_at = row.updated_at,
     }
@@ -54,10 +57,11 @@ function repo.save(window)
         local _, err = db:execute(
             "DELETE FROM " .. TABLE .. " WHERE name = $1", { window.name })
         if err then return nil, err end
+        local group = type(window.group) == "string" and window.group or ""
         local _, ierr = db:execute(
             "INSERT INTO " .. TABLE ..
-            " (name, title, width, height, source, modules) VALUES ($1, $2, $3, $4, $5, $6)",
-            { window.name, window.title, window.width, window.height, window.source, modules })
+            " (name, title, width, height, source, modules, menu_group) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            { window.name, window.title, window.width, window.height, window.source, modules, group })
         if ierr then return nil, ierr end
         return window.name
     end)
