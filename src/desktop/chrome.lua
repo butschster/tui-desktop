@@ -196,7 +196,10 @@ end
 -- true`), и композитор потом открывает помеченную, а не считает выбор заново.
 -- Цифр в строках нет намеренно: клавиатурный путь, не видный в интерфейсе,
 -- заводить нельзя, а видный требует колонки цифр — её здесь и не рисуем.
-function chrome.menu(canvas, width: any, height: any, items, failure, open: any, cursor: any)
+-- `anchor` — контекстное меню значка: та же рамка, но у указателя, а не по
+-- центру экрана, и подпись пункта берётся из `label` (у пункта «Открыть»
+-- `title` — заголовок окна, которое он откроет, а не его подпись).
+function chrome.menu(canvas, width: any, height: any, items, failure, open: any, cursor: any, anchor: any)
     local box_w = 40
     if box_w > width - 4 then box_w = width - 4 end
     if box_w < 12 then box_w = 12 end
@@ -204,6 +207,15 @@ function chrome.menu(canvas, width: any, height: any, items, failure, open: any,
     local box_h = rows + 2
     local left = (width - box_w) // 2
     local top = (height - box_h) // 2
+    if type(anchor) == "table" then
+        box_w = 16
+        local at_x: integer = math.tointeger(tonumber(anchor.x) or 1) or 1
+        local at_y: integer = math.tointeger(tonumber(anchor.y) or 2) or 2
+        local right_most: integer = (math.tointeger(width) or 0) - box_w + 1
+        local low_most: integer = (math.tointeger(height) or 0) - box_h
+        left = at_x < right_most and at_x or right_most
+        top = at_y < low_most and at_y or low_most
+    end
     if left < 1 then left = 1 end
     if top < 2 then top = 2 end
 
@@ -215,7 +227,7 @@ function chrome.menu(canvas, width: any, height: any, items, failure, open: any,
     end
     canvas:put(left, top + box_h - 1,
         styles.focused:render("╰" .. string.rep(BORDER.horizontal, span) .. "╯"), box_w)
-    canvas:put(left + 2, top, styles.title:render(" приложения "), box_w - 4)
+    canvas:put(left + 2, top, styles.title:render(type(anchor) == "table" and " значок " or " приложения "), box_w - 4)
 
     local hits = {}
 
@@ -228,7 +240,7 @@ function chrome.menu(canvas, width: any, height: any, items, failure, open: any,
     else
         local at = math.tointeger(tonumber(cursor) or 1) or 1
         for index, item in ipairs(items) do
-            local label = " " .. clip(item.title, span - 2) .. " "
+            local label = " " .. clip(tostring(item.label or item.title or ""), span - 2) .. " "
             local style = index == at and styles.title or styles.tab_idle
             canvas:put(left + 1, top + index, style:width(span):render(label), span)
             hits[#hits + 1] = {

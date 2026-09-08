@@ -10,6 +10,10 @@ local chrome = {}
 
 chrome.pixel = true
 local custom_insets = false
+local zoom_cell: any = nil
+function chrome.configure_cell_size(w, h)
+    zoom_cell = {w = w, h = h}
+end
 function chrome.configure_insets()
     custom_insets = true
 end
@@ -19,10 +23,12 @@ function chrome.window_background(canvas, window)
 end
 
 function chrome.layout(width, height)
+    if zoom_cell then return {top = 1, bottom = math.ceil(28 / zoom_cell.h)} end
     return {top = 1, bottom = 1}
 end
 
 function chrome.window_insets()
+    if zoom_cell then return {top = math.ceil(20 / zoom_cell.h), bottom = 1, left = 1, right = 1} end
     if custom_insets then return {top = 3, bottom = 1, left = 2, right = 1} end
     return {top = 1, bottom = 1, left = 1, right = 1}
 end
@@ -75,6 +81,10 @@ chrome.FOLDER = "Программы"
 -- будет у настоящей: резать по строкам, чтобы набор текста в окне не
 -- переотправлял весь хром.
 function chrome.paint(state: any, cell_w, cell_h)
+    if zoom_cell then
+        assert(cell_w == zoom_cell.w and cell_h == zoom_cell.h,
+            "paint received stale cell dimensions after font zoom")
+    end
     local placements, slots, choices = {}, {}, {}
 
     for index, window in ipairs(state.windows) do
@@ -115,7 +125,17 @@ function chrome.paint(state: any, cell_w, cell_h)
             cols = 30, rows = math.max(1, #items + 1),
         }
 
-        if #open == 0 then
+        if type(state.menu.anchor) == "table" then
+            -- Контекстное меню значка: плоский список у якоря, без папки.
+            placements[#placements].x = math.tointeger(state.menu.anchor.x) or 2
+            placements[#placements].y = math.tointeger(state.menu.anchor.y) or chrome.MENU_ROW
+            for index in ipairs(items) do
+                choices[#choices + 1] = {
+                    row = chrome.MENU_ROW + index - 1, from = 2, to = 31, index = index,
+                    level = 1, slot = index, cursor = at == index,
+                }
+            end
+        elseif #open == 0 then
             -- Корневая панель: сначала ПАПКА, потом программы. Папка несёт
             -- путь целиком — композитор дерева не помнит и раскрывает то, что
             -- ему дали.

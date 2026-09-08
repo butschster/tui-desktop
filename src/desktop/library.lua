@@ -173,19 +173,26 @@ local function run(options: any)
             return nil, "пиксельный режим не включается: оболочка не дала, чем узнать "
                 .. "размер ячейки (options.cell_size — обычно gfx.cell_size)"
         end
+    end
+    local function refresh_cell_size()
+        if not PIXELS then return true end
         local w, h = options.cell_size()
         if type(w) ~= "number" or type(h) ~= "number" then
             -- gfx.cell_size() отвечает (nil, причина): вторым значением тут
             -- приезжает именно она.
             return nil, "пиксельный режим не включается: " .. tostring(h)
         end
-        cell_w = math.tointeger(math.floor(w)) or 0
-        cell_h = math.tointeger(math.floor(h)) or 0
-        if cell_w < 1 or cell_h < 1 then
+        local next_w = math.tointeger(math.floor(w)) or 0
+        local next_h = math.tointeger(math.floor(h)) or 0
+        if next_w < 1 or next_h < 1 then
             return nil, "пиксельный режим не включается: размер ячейки "
                 .. tostring(w) .. "x" .. tostring(h) .. " невозможен"
         end
+        cell_w, cell_h = next_w, next_h
+        return true
     end
+    local sized, size_error = refresh_cell_size()
+    if not sized then return nil, size_error end
 
     local SERVICE_NAME = type(options.service_name) == "string"
         and options.service_name ~= "" and options.service_name
@@ -213,26 +220,25 @@ local function run(options: any)
     -- сторон — то есть знал про вид. Тема с полосой заголовка ВНУТРИ рамки
     -- забирает сверху три строки, и окно, посчитанное по единице, отдало бы
     -- программе на строку больше, чем видно.
-    local insets: any = {top = 1, bottom = 1, left = 1, right = 1}
-    if type(options.chrome.window_insets) == "function" then
-        local given: any = options.chrome.window_insets()
-        if type(given) == "table" then
-            for _, side in ipairs({"top", "bottom", "left", "right"}) do
-                local value = math.tointeger(tonumber(given[side]) or 1) or 1
-                if value < 0 then value = 0 end
-                insets[side] = value
+    local insets: any = {}
+    local FRAME_W, FRAME_H, MIN_W, MIN_H = 2, 2, 12, 5
+    local function refresh_frame()
+        insets = {top = 1, bottom = 1, left = 1, right = 1}
+        if type(chrome.window_insets) == "function" then
+            local given: any = chrome.window_insets()
+            if type(given) == "table" then
+                for _, side in ipairs({"top", "bottom", "left", "right"}) do
+                    local value = math.tointeger(tonumber(given[side]) or 1) or 1
+                    insets[side] = math.max(0, value)
+                end
             end
         end
+        FRAME_W = (math.tointeger(insets.left) or 1) + (math.tointeger(insets.right) or 1)
+        FRAME_H = (math.tointeger(insets.top) or 1) + (math.tointeger(insets.bottom) or 1)
+        MIN_W = math.max(12, FRAME_W + 4)
+        MIN_H = math.max(5, FRAME_H + 3)
     end
-
-    local FRAME_W = (math.tointeger(insets.left) or 1) + (math.tointeger(insets.right) or 1)
-    local FRAME_H = (math.tointeger(insets.top) or 1) + (math.tointeger(insets.bottom) or 1)
-
-    -- Окно меньше рамки означает viewport нулевого размера — то есть отказ
-    -- на открытии, а не кривой вид. Границы считаются из рамки, чтобы смена
-    -- темы не разошлась с ними молча.
-    local MIN_W = math.max(12, FRAME_W + 4)
-    local MIN_H = math.max(5, FRAME_H + 3)
+    refresh_frame()
 
     -- Записать новое место значка. Раскладку хранит оболочка, поэтому
     -- композитор не пишет её сам, а просит — и откатывает значок, если
@@ -681,7 +687,7 @@ local function run(options: any)
                 windows = windows, focused_id = focused_id,
                 items = desk.items, failure = desk.failure, selected = selected_id,
                 menu = menu and {items = menu.items, failure = menu.failure,
-                    open = menu.open, cursor = menu.cursor} or nil,
+                    open = menu.open, cursor = menu.cursor, anchor = menu.anchor} or nil,
                 status = status, clock = clock, hint = HINT,
             }, cell_w, cell_h)
 
@@ -708,7 +714,9 @@ local function run(options: any)
             bar_hits = chrome.bars(canvas, width, height, {
                 windows = windows,
                 focused_id = focused_id,
-                menu_open = menu ~= nil,
+                -- «Пуск» нажат, пока открыт его каскад; контекстное меню
+                -- значка (с якорем) — не его.
+                menu_open = menu ~= nil and menu.anchor == nil,
                 status = status,
                 clock = clock,
             })
@@ -721,7 +729,7 @@ local function run(options: any)
                 -- сюда. Так «что выбрано» существует в одном месте — в том,
                 -- что нарисовано.
                 local hits = chrome.menu(canvas, width, height, menu.items, menu.failure,
-                    menu.open, menu.cursor)
+                    menu.open, menu.cursor, menu.anchor)
                 if type(hits) == "table" then menu_hits = hits end
             end
         end
@@ -1014,6 +1022,27 @@ local function run(options: any)
         else notice = "не открылось: " .. tostring(err) end
     end
 
+    -- Контекстное меню значка стола: «Открыть» — то же, что двойной щелчок,
+    -- и «Свойства», если программа объявила окно свойств (`meta.properties`
+    -- у записи — его тема кладёт в попадание значка). Пункты — те же
+    -- таблицы, что у каталога «Пуска», поэтому их открывает тот же
+    -- `activate_menu_item`, а ходит по ним та же клавиатура и то же
+    -- наведение. Подпись пункта — `label`; `title` остаётся заголовком
+    -- окна, которое пункт открывает.
+    local function context_items(spot: any): any
+        local items = {}
+        if type(spot.entry) == "string" and spot.entry ~= "" then
+            items[#items + 1] = {label = "Открыть", bold = true,
+                entry = spot.entry, title = spot.title, w = spot.w, h = spot.h,
+                args = spot.args, window_type = spot.window_type, image = spot.image}
+        end
+        if type(spot.properties) == "string" and spot.properties ~= "" then
+            items[#items + 1] = {label = "Свойства", entry = spot.properties,
+                separator_before = #items > 0 or nil}
+        end
+        return items
+    end
+
     local function resize_window(window, w: any, h: any)
         window.w = clamp(tonumber(w) or window.w, MIN_W, width)
         window.h = clamp(tonumber(h) or window.h, MIN_H, desktop_height())
@@ -1286,6 +1315,22 @@ local function run(options: any)
                     y = event.y - window.y - (math.tointeger(insets.top) or 1) + 1,
                     alt = event.alt, ctrl = event.ctrl, shift = event.shift,
                 })
+                return
+            end
+            -- Правая кнопка по значку стола — контекстное меню у указателя.
+            -- Это то же меню, что «Пуск», только с плоским списком и якорем:
+            -- тема кладёт панель у якоря, а не над панелью задач.
+            if event.button == "right" and not window then
+                local spot = desktop_spot(event.x, event.y)
+                if spot and spot.id then
+                    selected_id = spot.id
+                    local items = context_items(spot)
+                    if #items > 0 then
+                        menu = {items = items, failure = nil, open = {}, cursor = 1,
+                            anchor = {x = event.x, y = event.y}}
+                    end
+                    draw()
+                end
             end
             return
         end
@@ -1877,6 +1922,7 @@ local function run(options: any)
                 -- нельзя — пустое меню и меню без папок на экране одинаковы.
                 menu_choices = menu_choices_count(),
                 menu_folders = menu_folders_count(),
+                menu_context = (menu ~= nil and menu.anchor ~= nil) or false,
                 -- Номер выбранной строки на текущем уровне; 0 — не выбрано.
                 -- Без него «наведение не выделило» и «выделило, а тема не
                 -- нарисовала» — один и тот же кадр.
@@ -2115,6 +2161,12 @@ local function run(options: any)
             else
                 local event = selected.value
                 if event.type == "resize" then
+                    -- Font zoom changes pixels per cell independently of the
+                    -- grid. Refresh the theme before its layout/insets, then
+                    -- resize every client and rebuild rasters at native size.
+                    local refreshed, refresh_error = refresh_cell_size()
+                    if refreshed then refresh_frame()
+                    else notice = "размер ячейки не обновлён: " .. tostring(refresh_error) end
                     -- Ресайз тоже приходит с нулями, когда терминал исчез;
                     -- нулевой холст уронил бы композитор вместе со всеми окнами.
                     local w = math.floor(tonumber(event.width) or 0)

@@ -1145,6 +1145,69 @@ local function define_tests()
             process.terminate(tostring(desk.pid))
         end)
 
+        test.it("правая кнопка по значку открывает контекстное меню у указателя, esc закрывает", function()
+            local service = "butschster.tui_desktop.test.pixels.context"
+            local watcher = "butschster.tui_desktop.test.pixels.context.watcher"
+            local box = mailbox(process.inbox())
+            process.registry.register(watcher)
+            local desk = boot_pixel_composer(service, watcher, "ok")
+
+            local function listed(): any
+                return ask_desktop(service, box, "desktop.list", {})
+            end
+            local function wait_context(wanted)
+                local at: any = nil
+                local deadline = time.now():unix_nano() + 5000000000
+                while time.now():unix_nano() < deadline do
+                    at = listed()
+                    if (at.menu_context == true) == wanted then break end
+                    channel.select({time.after("100ms"):case_receive()})
+                end
+                return at
+            end
+
+            -- Первый значок тестовой темы стоит в 2,4. Правая кнопка по нему
+            -- выделяет его и открывает меню с якорем — без «Пуска».
+            desk.view:send({type = "mouse", action = "press", button = "right", x = 3, y = 4})
+            local shown = wait_context(true)
+            test.eq(shown.menu_context, true, "правая кнопка по значку обязана открыть контекстное меню")
+            test.eq(tostring(shown.selected), "i1", "щелчок правой выделяет значок")
+            test.eq(math.tointeger(shown.menu_choices) or 0, 1,
+                "у значка без окна свойств один пункт — «Открыть»")
+
+            press(desk, "esc")
+            local closed = wait_context(false)
+            test.eq(closed.menu_context, false, "esc закрывает контекстное меню")
+            test.eq(#closed.windows, 0, "закрытое меню ничего не открыло")
+
+            -- Снова, и enter открывает «Открыть» — то же окно, что двойной щелчок.
+            desk.view:send({type = "mouse", action = "press", button = "right", x = 3, y = 4})
+            wait_context(true)
+            press(desk, "enter")
+            local grown: any = nil
+            local until_open = time.now():unix_nano() + 8000000000
+            while time.now():unix_nano() < until_open do
+                grown = listed()
+                if #grown.windows > 0 then break end
+                channel.select({time.after("100ms"):case_receive()})
+            end
+            test.eq(#grown.windows, 1, "enter в контекстном меню обязан открыть значок")
+            test.eq(tostring(grown.windows[1].entry), "app:menu_target")
+            test.eq(grown.menu_context, false, "после открытия меню закрыто")
+
+            -- Правая кнопка по пустому столу меню не открывает.
+            desk.view:send({type = "mouse", action = "press", button = "right", x = 60, y = 20})
+            channel.select({time.after("300ms"):case_receive()})
+            test.eq(listed().menu_context, false, "по пустому столу меню нет")
+
+            desk.view:send({type = "key", action = "press", key_type = "runes", key = "q", ctrl = true})
+            local deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline and process.registry.lookup(service) do
+                channel.select({time.after("20ms"):case_receive()})
+            end
+            desk.view:close()
+        end)
+
         test.it("стрелки водят выделение по значкам стола, а enter открывает", function()
             -- Значки лежат сеткой два на два; у каждого ДВЕ строки попаданий,
             -- как у настоящей темы с подписью. Стрелка вниз обязана уйти на
@@ -1560,6 +1623,52 @@ local function define_tests()
                 "курсор обязан доехать до темы: иначе стрелка двигает невидимое")
 
             process.terminate(tostring(desk.pid))
+        end)
+    end)
+
+    test.describe("butschster.tui_desktop масштаб пиксельной темы", function()
+        test.it("смена размера ячейки обновляет кадр и клиент даже при прежней сетке", function()
+            local service = "butschster.tui_desktop.test.pixels.zoom"
+            local watcher = service .. ".watcher"
+            local provider = "butschster.tui_desktop.test.provider"
+            process.registry.register(watcher)
+            local desk = boot_pixel_composer(service, watcher, "zoom")
+            tell_desktop(service, "desktop.open",
+                {entry = "app:view_window", x = 5, y = 4, w = 30, h = 12})
+            local deadline = time.now():unix_nano() + 5000000000
+            while time.now():unix_nano() < deadline and not process.registry.lookup(provider) do
+                channel.select({time.after("20ms"):case_receive()})
+            end
+            test.not_nil(process.registry.lookup(provider))
+            for _, expected in ipairs({{w = 8, h = 18, top = 2}, {w = 12, h = 24, top = 1}}) do
+                test.is_true(desk.view:send({type = "resize", width = 80, height = 24}) == true)
+                local report: any = {}
+                deadline = time.now():unix_nano() + 5000000000
+                while time.now():unix_nano() < deadline do
+                    report = ask_on(provider, "probe.report", {}, "probe.state")
+                    if report.resize and report.resize.cell_w == expected.w then break end
+                    channel.select({time.after("20ms"):case_receive()})
+                end
+                test.not_nil(report.resize, "клиент не получил resize после смены размера ячейки")
+                test.eq(report.resize.cell_w, expected.w)
+                test.eq(report.resize.cell_h, expected.h)
+                test.eq(report.resize.width, 28)
+                test.eq(report.resize.height, 12 - expected.top - 1,
+                    "отступ заголовка должен обновиться перед resize клиента")
+                click(desk, 6, 4 + expected.top)
+                ask_fresh(service, "desktop.list", {})
+            end
+            local listed = ask_fresh(service, "desktop.list", {})
+            for _, window in ipairs(listed.windows or {}) do
+                tell_desktop(service, "desktop.close", {id = window.id})
+            end
+            deadline = time.now():unix_nano() + 8000000000
+            while time.now():unix_nano() < deadline and process.registry.lookup(provider) do
+                channel.select({time.after("20ms"):case_receive()})
+            end
+            test.is_nil(process.registry.lookup(provider))
+            process.terminate(tostring(desk.pid))
+            process.registry.unregister(watcher)
         end)
     end)
 
