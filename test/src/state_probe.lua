@@ -26,6 +26,7 @@ local function main(desktop, window_id)
 
     local pushed = 0
     local inputs = {}
+    local last_resize: any = nil
 
     while true do
         local picked = channel.select({inbox:case_receive(), time.after("30s"):case_receive()})
@@ -46,6 +47,7 @@ local function main(desktop, window_id)
             })
         elseif topic == "window.input" then
             local event: any = body.event or {}
+            if event.type == "resize" then last_resize = event end
             inputs[#inputs + 1] = tostring(event.type) .. ":"
                 .. tostring(event.x) .. "," .. tostring(event.y)
                 .. ":" .. tostring(event.action) .. ":" .. tostring(event.button)
@@ -54,6 +56,7 @@ local function main(desktop, window_id)
                 desktop = tostring(desktop),
                 window = tostring(window_id),
                 pushed = pushed,
+                resize = last_resize,
                 inputs = table.concat(inputs, " "),
             })
         end

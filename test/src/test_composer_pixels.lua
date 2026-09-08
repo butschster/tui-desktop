@@ -40,7 +40,16 @@ local function main(args)
         desktop_items = desktop_items,
     }
 
-    if kind == "actions" then
+    if kind == "zoom" then
+        local reads = 0
+        options.cell_size = function()
+            reads = reads + 1
+            local sizes = {{10, 20}, {8, 18}, {12, 24}}
+            local size = sizes[math.min(reads, #sizes)]
+            pixel_chrome.configure_cell_size(size[1], size[2])
+            return size[1], size[2]
+        end
+    elseif kind == "actions" then
         pixel_chrome.clock_entry = "app:view_window"
         options.cell_size = function() return 10, 20 end
         options.catalog = function()
