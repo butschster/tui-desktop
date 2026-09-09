@@ -34,6 +34,121 @@ apps.ALLOWED_MODULES = {
 
 apps.DEFAULT_MODULES = {"channel", "time", "tty"}
 
+-- Библиотека десктопа подключается каждому окну под этим именем; занять его
+-- своим импортом нельзя.
+apps.DESKTOP_IMPORT = "butschster.tui_desktop.desktop:window_api"
+apps.WINDOW_TYPES = {app = true, dialog = true, tool = true}
+
+-- Описание окна сверх кода — то, что у записи из файла лежит в meta и
+-- imports. Здесь только известные поля: чужие не доезжают до записи молча.
+--
+--   imports      — {имя = id библиотеки}: SDK оболочки, свои библиотеки.
+--   pixel_render — библиотека пиксельного вида; pixel_state — само окно.
+--   image, icon, window_type, resizable, in_menu, order — как у записи.
+function apps.normalize_spec(given: any): any
+    local spec: any = type(given) == "table" and given or {}
+    local out: any = {}
+    if type(spec.imports) == "table" then
+        local imports: any = {}
+        local any = false
+        for alias, id in pairs(spec.imports) do
+            if type(alias) == "string" and type(id) == "string" and id ~= "" then
+                imports[alias] = id
+                any = true
+            end
+        end
+        if any then out.imports = imports end
+    end
+    if type(spec.image) == "string" and spec.image ~= "" then out.image = spec.image end
+    if type(spec.icon) == "string" and spec.icon ~= "" then out.icon = spec.icon end
+    if type(spec.window_type) == "string" and apps.WINDOW_TYPES[spec.window_type] then
+        out.window_type = spec.window_type
+    end
+    if spec.resizable == false then out.resizable = false end
+    if spec.in_menu == false then out.in_menu = false end
+    if type(spec.pixel_render) == "string" and spec.pixel_render ~= "" then
+        out.pixel_render = spec.pixel_render
+    end
+    if type(spec.order) == "number" then out.order = spec.order end
+    return out
+end
+
+-- Что в описании не пройдёт. Каждый отказ называет поле и причину: окно с
+-- мёртвым импортом применилось бы, попало в меню и упало при первом
+-- открытии — когда причину связать с полем труднее всего.
+function apps.rejected_spec(given: any): any
+    local out = {}
+    local spec: any = type(given) == "table" and given or {}
+    local function library(id: any, field: string)
+        local entry: any = registry.get(tostring(id))
+        if not entry then
+            out[#out + 1] = field .. ": записи " .. tostring(id) .. " нет в реестре"
+        elseif type(entry) == "table" and entry.kind ~= nil and entry.kind ~= "library.lua" then
+            out[#out + 1] = field .. ": " .. tostring(id) .. " — не библиотека (" .. tostring(entry.kind) .. ")"
+        end
+    end
+    if type(spec.imports) == "table" then
+        for alias, id in pairs(spec.imports) do
+            local name = tostring(alias)
+            if not name:match("^[a-z_][a-z0-9_]*$") then
+                out[#out + 1] = "imports: имя " .. name .. " — строчные латинские буквы, цифры и подчёркивание"
+            elseif name == "desktop" then
+                out[#out + 1] = "imports: имя desktop занято библиотекой десктопа"
+            elseif type(id) ~= "string" or id == "" then
+                out[#out + 1] = "imports: у " .. name .. " нет идентификатора записи"
+            else
+                library(id, "imports")
+            end
+        end
+    end
+    if spec.window_type ~= nil and not apps.WINDOW_TYPES[tostring(spec.window_type)] then
+        out[#out + 1] = "window_type: app, dialog или tool"
+    end
+    if spec.pixel_render ~= nil then
+        if type(spec.pixel_render) ~= "string" or spec.pixel_render == "" then
+            out[#out + 1] = "pixel_render: идентификатор библиотеки вида"
+        else
+            library(spec.pixel_render, "pixel_render")
+        end
+    end
+    return out
+end
+
+-- prepare(body) -> окно | nil, причина
+--
+-- Одна проверка на все входы мастерской — HTTP и туз MCP: два разбора одного
+-- тела разошлись бы на первом же новом поле.
+function apps.prepare(body: any): (any, any)
+    local given: any = type(body) == "table" and body or {}
+    local name = type(given.name) == "string" and given.name or ""
+    if not name:match("^[a-z][a-z0-9_]*$") then
+        return nil, "name: строчные латинские буквы, цифры и подчёркивание, начиная с буквы"
+    end
+    local source = type(given.source) == "string" and given.source or ""
+    if source == "" then return nil, "source: код окна обязателен" end
+    -- Процесс запускается методом main. Запись без него применится молча и
+    -- умрёт при первом открытии, уже без объяснения причины.
+    if not source:find("main", 1, true) then
+        return nil, "source: код обязан возвращать таблицу с функцией main"
+    end
+    local refused = apps.rejected_modules(given.modules)
+    if #refused > 0 then return nil, "modules: недоступны — " .. table.concat(refused, ", ") end
+    local spec_refused = apps.rejected_spec(given)
+    if #spec_refused > 0 then return nil, table.concat(spec_refused, "; ") end
+    return {
+        name = name,
+        title = type(given.title) == "string" and given.title ~= "" and given.title or name,
+        width = tonumber(given.width) or 40,
+        height = tonumber(given.height) or 12,
+        source = source,
+        modules = apps.normalize_modules(given.modules),
+        -- Папка меню «Пуск», как `meta.group` у записи из файла. Пусто —
+        -- оболочка решает сама.
+        group = type(given.group) == "string" and given.group or "",
+        spec = apps.normalize_spec(given),
+    }, nil
+end
+
 function apps.entry_id(name)
     return apps.NAMESPACE .. ":" .. name
 end
@@ -85,6 +200,25 @@ function apps.build_entry(window)
     -- вовсе: «не названа» и «названа пустой» для оболочки разные ответы,
     -- и решать за окно, что оно хочет на корень, мастерская не должна.
     if type(window.group) == "string" and window.group ~= "" then meta.group = window.group end
+
+    -- Описание сверх кода: те же поля и те же имена, что у записи из файла,
+    -- поэтому каталог и тема узнают их без перевода.
+    local spec = apps.normalize_spec(window.spec)
+    if spec.image then meta.image = spec.image end
+    if spec.icon then meta.icon = spec.icon end
+    if spec.window_type then meta.window_type = spec.window_type end
+    if spec.resizable == false then meta.resizable = false end
+    if spec.in_menu == false then meta.in_menu = false end
+    if spec.order then meta.order = spec.order end
+    -- Пиксельный вид: рисует названная библиотека, состояние публикует само
+    -- окно — как у окон SDK оболочки из файлов.
+    if spec.pixel_render then
+        meta.pixel_render = spec.pixel_render
+        meta.pixel_state = apps.entry_id(window.name)
+    end
+    local imports: any = {desktop = apps.DESKTOP_IMPORT}
+    for alias, id in pairs(spec.imports or {}) do imports[alias] = id end
+
     return {
         id = apps.entry_id(window.name),
         kind = "process.lua",
@@ -93,7 +227,7 @@ function apps.build_entry(window)
             source = window.source,
             method = "main",
             modules = apps.normalize_modules(window.modules),
-            imports = {desktop = "butschster.tui_desktop.desktop:window_api"},
+            imports = imports,
             security = {policies = {apps.POLICY}},
         },
     }

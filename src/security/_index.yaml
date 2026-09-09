@@ -23,6 +23,10 @@ entries:
         - process.registry
         - process.registry.register
         - process.registry.unregister
+        # Окна порождаются под личностью вошедшего пользователя (options.logon
+        # у library.run): подменить актора и скоуп потомка — отдельное право,
+        # без него `with_actor` отказывает «custom security context».
+        - process.security
         - exec.get
         - exec.run
         # Каталог окон приложения читается из реестра по meta.type, а окна,

@@ -23,6 +23,7 @@ local function define_tests()
             local saved, serr = repo.save({
                 name = NAME, title = "Проба", width = 30, height = 8,
                 source = SOURCE, modules = {"tty", "channel"},
+                spec = {imports = {app = "some.module:app"}, image = "program"},
             })
             test.is_nil(serr)
             test.eq(saved, NAME)
@@ -33,6 +34,8 @@ local function define_tests()
             test.eq(window.title, "Проба")
             test.eq(window.width, 30)
             test.eq(window.source, SOURCE)
+            test.eq(window.spec.image, "program", "описание сверх кода переживает базу")
+            test.eq(window.spec.imports.app, "some.module:app")
 
             local listed, lerr = repo.list()
             test.is_nil(lerr)
@@ -126,6 +129,62 @@ local function define_tests()
             for _, name in ipairs(apps.normalize_modules({})) do names[name] = true end
             test.is_true(names.tty, "tty обязателен")
             test.is_true(names.channel, "channel обязателен")
+        end)
+
+        test.it("несёт описание сверх кода: импорты, значок, тип окна, пиксельный вид", function()
+            -- Окно на SDK оболочки объявляет импорт `app` и библиотеку вида;
+            -- всё это доезжает до записи теми же полями, что у окна из файла.
+            local entry = apps.build_entry({
+                name = "probe", title = "Проба", width = 30, height = 8,
+                source = SOURCE, modules = {}, spec = {
+                    imports = {app = "some.module:app"},
+                    image = "program", icon = "▸", window_type = "dialog",
+                    resizable = false, in_menu = false, order = 5,
+                    pixel_render = "some.module:render",
+                    stray = "не доезжает",
+                },
+            })
+            test.eq(entry.data.imports.app, "some.module:app")
+            test.eq(entry.data.imports.desktop, apps.DESKTOP_IMPORT, "библиотека десктопа остаётся")
+            test.eq(entry.meta.image, "program")
+            test.eq(entry.meta.icon, "▸")
+            test.eq(entry.meta.window_type, "dialog")
+            test.eq(entry.meta.resizable, false)
+            test.eq(entry.meta.in_menu, false)
+            test.eq(entry.meta.order, 5)
+            test.eq(entry.meta.pixel_render, "some.module:render")
+            test.eq(entry.meta.pixel_state, "butschster.tui_desktop.apps:probe", "состояние вида публикует само окно")
+            test.is_nil(entry.meta.stray)
+            -- Без описания — запись как раньше.
+            local plain = apps.build_entry({
+                name = "probe", title = "Проба", width = 30, height = 8, source = SOURCE, modules = {},
+            })
+            test.is_nil(plain.meta.pixel_render)
+            test.is_nil(plain.meta.window_type)
+        end)
+
+        test.it("prepare отказывает по имени поля: мёртвый импорт, чужое имя, не тот тип окна", function()
+            local base = {name = "probe", source = SOURCE, modules = {}}
+            local function with(extra: any): any
+                local body = {}
+                for k, v in pairs(base) do body[k] = v end
+                for k, v in pairs(extra) do body[k] = v end
+                return body
+            end
+            local _, dead = apps.prepare(with({imports = {app = "no.such:library"}}))
+            test.is_true(tostring(dead):find("no.such:library", 1, true) ~= nil, "отказ обязан назвать запись")
+            local _, taken = apps.prepare(with({imports = {desktop = apps.DESKTOP_IMPORT}}))
+            test.is_true(tostring(taken):find("desktop", 1, true) ~= nil)
+            local _, kind = apps.prepare(with({window_type = "popup"}))
+            test.is_true(tostring(kind):find("window_type", 1, true) ~= nil)
+            local _, render = apps.prepare(with({pixel_render = "no.such:render"}))
+            test.is_true(tostring(render):find("pixel_render", 1, true) ~= nil)
+            -- Живая библиотека проходит: window_api есть в реестре стенда.
+            local window, err = apps.prepare(with({imports = {desk2 = apps.DESKTOP_IMPORT}, title = "", group = "Программы"}))
+            test.is_nil(err)
+            test.eq(window.title, "probe", "пустой заголовок — имя")
+            test.eq(window.spec.imports.desk2, apps.DESKTOP_IMPORT)
+            test.eq(window.group, "Программы")
         end)
 
         test.it("собирает запись окна под своей политикой", function()

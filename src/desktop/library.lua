@@ -140,6 +140,9 @@ end
 --   options.chrome        — тема (контракт в README). Обязательна.
 --   options.service_name  — имя, под которым композитор виден процессам.
 --   options.hint          — подсказка на пустом рабочем столе.
+--   options.logon         — (screen) -> identity | nil, причина. Вход до первого
+--                           кадра: identity = {actor, scope, context}, и под ней
+--                           порождается каждое окно. Подробности в README.
 local function run(options: any)
     options = type(options) == "table" and options or {}
 
@@ -200,6 +203,30 @@ local function run(options: any)
 
     local HINT = type(options.hint) == "string" and options.hint
         or "alt+n — окно с bash · alt+o — приложения · ctrl+q — выход"
+
+    -- Вход в систему. Оболочка отдаёт функцию, которая рисует диалог на этом
+    -- же терминале и возвращает личность: {actor, scope, context = {...}}.
+    -- Под этой личностью композитор порождает КАЖДОЕ окно — и это вся
+    -- механика «текущего пользователя»: сам композитор остаётся под своим
+    -- актором, а личность окна фиксируется в момент порождения. Сменить
+    -- пользователя значит закрыть окна и войти заново.
+    local logon: any = type(options.logon) == "function" and options.logon or nil
+    local IDENTITY: any = nil
+
+    -- Порождение окна под вошедшим пользователем. Одна функция на оба вида
+    -- окон: поставщик состояния и процесс с viewport получают одного и того
+    -- же актора, иначе окно-вид и окно с программой жили бы под разными
+    -- людьми, и различие всплыло бы на первом же «мои агенты».
+    local function spawner(base: any, context: any): any
+        if IDENTITY then
+            for key, value in pairs(IDENTITY.context or {}) do
+                if context[key] == nil then context[key] = value end
+            end
+        end
+        local chain: any = base and base:with_context(context) or process.with_context(context)
+        if IDENTITY then chain = chain:with_actor(IDENTITY.actor):with_scope(IDENTITY.scope) end
+        return chain
+    end
 
     -- Каталог программ. Внутренний отдаёт плоский список: механике окон
     -- незачем знать про папки меню и значки. Оболочка, которой это нужно,
@@ -322,6 +349,47 @@ local function run(options: any)
 
     local width, height = screen_geometry()
     local canvas = tty.canvas(width, height)
+
+    -- Вход — до первого кадра стола и до того, как композитор начнёт читать
+    -- команды: окно, открытое каналом в этот момент, родилось бы без
+    -- личности. Диалог рисует оболочка на этом же холсте; композитор держит
+    -- размер экрана и показывает кадр — то же, что он делает для стола.
+    if logon then
+        local screen: any = {
+            events = events, pixels = PIXELS,
+            width = width, height = height, canvas = canvas,
+        }
+        function screen.cell() return cell_w, cell_h end
+        function screen.resize()
+            width, height = screen_geometry()
+            canvas = tty.canvas(width, height)
+            screen.width, screen.height, screen.canvas = width, height, canvas
+            return width, height
+        end
+        function screen.present(painted: any)
+            local images: any = nil
+            if PIXELS and type(painted) == "table" then
+                images = pixels.frame(canvas, painted)
+            end
+            return out:present(canvas:rows(), {images = images})
+        end
+        -- Упавший диалог — отказ входа с причиной, а не композитор, оставивший
+        -- терминал в alternate screen без единого слова.
+        local ok, identity, why = pcall(logon, screen)
+        if not ok then identity, why = nil, "диалог входа упал: " .. tostring(identity) end
+        if type(identity) ~= "table" or identity.actor == nil or identity.scope == nil then
+            -- Отказ входа — это выход, а не стол под служебным актором: стол
+            -- без пользователя выглядел бы как вошедший, а окна в нём
+            -- работали бы от имени процесса.
+            process.registry.unregister(SERVICE_NAME)
+            assert(tty.mouse(false))
+            assert(out:close())
+            assert(tty.stop())
+            return nil, type(why) == "string" and why or "вход не выполнен"
+        end
+        IDENTITY = {actor = identity.actor, scope = identity.scope,
+            context = type(identity.context) == "table" and identity.context or {}}
+    end
 
     -- Первая и последняя строка, свободные под окна. Считаются по теме, а
     -- не по константе: у одной полоса окон сверху, у другой панель задач
@@ -875,7 +943,7 @@ local function run(options: any)
                 -- секунду ради списка, который меняется раз в час, — и ждать
                 -- чужой процесс, пока стоит весь стол.
                 -- Args retain their position; geometry is a separate fourth argument.
-                local state_pid, serr = process.with_context({[window_api.CONTEXT_KEY] = SERVICE_NAME})
+                local state_pid, serr = spawner(nil, {[window_api.CONTEXT_KEY] = SERVICE_NAME})
                     :spawn_monitored(tostring(state_ref), WINDOW_HOST, SERVICE_NAME, tostring(view_window.id),
                         type(spec.args) == "string" and spec.args ~= "" and spec.args or nil, {
                             width = w - FRAME_W, height = h - FRAME_H,
@@ -914,8 +982,7 @@ local function run(options: any)
         -- оболочкой десктоп зарегистрирован своим именем, и окно, знающее
         -- только константу, обращалось бы к чужому процессу — молча, потому
         -- что `desktop.open` ответа не ждёт.
-        local pid, perr = process.with_options({terminal = grant})
-            :with_context({[window_api.CONTEXT_KEY] = SERVICE_NAME})
+        local pid, perr = spawner(process.with_options({terminal = grant}), {[window_api.CONTEXT_KEY] = SERVICE_NAME})
             :spawn_monitored(entry, WINDOW_HOST, argument)
         if not pid then
             view:close()
@@ -1915,6 +1982,9 @@ local function run(options: any)
                 -- может — терминал отвечает только композитору.
                 cell = {w = cell_w, h = cell_h},
                 pixels = PIXELS,
+                -- Кто вошёл. Без этого поля «окна под пользователем» и «окна
+                -- под служебным актором» снаружи неотличимы.
+                user = IDENTITY and {id = IDENTITY.context.user_id, name = IDENTITY.context.user_name} or nil,
                 -- Строка состояния: единственное место, где отказ виден
                 -- человеку. Наружу она отдаётся, чтобы «отказ показан» можно
                 -- было проверить, а не рассматривать глазами.
@@ -1955,6 +2025,30 @@ local function run(options: any)
             reload_desktop()
             reply({ok = true, items = #desk.items, failure = desk.failure}, to, topic)
             return true
+        end
+
+        -- Окно мастерской в реестр — по просьбе снаружи, тем же кодом, что
+        -- восстановление на старте. Просит туз MCP: скоуп MCP-сессии запрещает
+        -- `registry.apply` явным deny, и туз, применяющий запись сам, молча
+        -- ничего бы не сделал. Композитор работает под своим актором — у него
+        -- это право есть, и строка к тому моменту уже в хранилище.
+        if topic == "desktop.workshop" then
+            local name = type(body.name) == "string" and body.name or ""
+            if name == "" then return refuse("имя окна не названо", to, topic, from) end
+            local entry_id = apps.entry_id(name)
+            if body.remove == true then
+                local removed, rerr = apps.remove(name)
+                if not removed then return refuse("снятие из реестра: " .. tostring(rerr), to, topic, from) end
+                reply({ok = true, name = name, entry = entry_id, live = false}, to, topic)
+                return false
+            end
+            local stored_window, gerr = repo.get(name)
+            if gerr then return refuse("хранилище: " .. tostring(gerr), to, topic, from) end
+            if not stored_window then return refuse("окна " .. name .. " нет в хранилище", to, topic, from) end
+            local applied, aerr = apps.apply(stored_window)
+            if not applied then return refuse("применение: " .. tostring(aerr), to, topic, from) end
+            reply({ok = true, name = name, entry = entry_id, live = registry.get(entry_id) ~= nil}, to, topic)
+            return false
         end
 
         if topic == "desktop.open" then

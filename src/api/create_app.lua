@@ -35,37 +35,11 @@ local function handler()
     local body = json.decode(req:body() or "") or {}
     if type(body) ~= "table" then body = {} end
 
-    local name = type(body.name) == "string" and body.name or ""
-    if not name:match("^[a-z][a-z0-9_]*$") then
-        return bad(res, "name: строчные латинские буквы, цифры и подчёркивание, начиная с буквы")
-    end
-
-    local source = type(body.source) == "string" and body.source or ""
-    if source == "" then
-        return bad(res, "source: код окна обязателен")
-    end
-    -- Процесс запускается методом main. Запись без него применится молча и
-    -- умрёт при первом открытии, уже без объяснения причины.
-    if not source:find("main", 1, true) then
-        return bad(res, "source: код обязан возвращать таблицу с функцией main")
-    end
-
-    local refused = apps.rejected_modules(body.modules)
-    if #refused > 0 then
-        return bad(res, "modules: недоступны — " .. table.concat(refused, ", "))
-    end
-
-    local window = {
-        name = name,
-        title = type(body.title) == "string" and body.title ~= "" and body.title or name,
-        width = tonumber(body.width) or 40,
-        height = tonumber(body.height) or 12,
-        source = source,
-        modules = apps.normalize_modules(body.modules),
-        -- Папка меню «Пуск», как `meta.group` у записи из файла:
-        -- "Программы/Контент-машина". Пусто — оболочка решает сама.
-        group = type(body.group) == "string" and body.group or "",
-    }
+    -- Разбор и проверка тела — в библиотеке, общей с тузом MCP: два разбора
+    -- одного тела разошлись бы на первом новом поле.
+    local window, verr = apps.prepare(body)
+    if not window then return bad(res, tostring(verr)) end
+    local name = window.name
 
     local existing = repo.get(name)
 
@@ -92,6 +66,7 @@ local function handler()
         title = window.title,
         modules = window.modules,
         group = window.group,
+        spec = window.spec,
         replaced = existing ~= nil,
     })
 end

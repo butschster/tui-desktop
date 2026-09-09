@@ -33,6 +33,16 @@ local function decode_modules(raw)
     return decoded
 end
 
+-- Описание сверх кода (импорты, значок, тип окна, пиксельный вид) — JSON в
+-- колонке `spec` (миграция 03). Строка без колонки читается как «ничего
+-- не объявлено», а не как отказ.
+local function decode_spec(raw: any): any
+    if type(raw) ~= "string" or raw == "" then return {} end
+    local decoded = json.decode(raw)
+    if type(decoded) ~= "table" then return {} end
+    return decoded
+end
+
 local function to_window(row: any)
     return {
         name = row.name,
@@ -44,6 +54,7 @@ local function to_window(row: any)
         -- Папка меню; пусто — не названа. Колонка появилась миграцией 02,
         -- поэтому читается с запасом на строку, где её ещё нет.
         group = type(row.menu_group) == "string" and row.menu_group or "",
+        spec = decode_spec(row.spec),
         created_at = row.created_at,
         updated_at = row.updated_at,
     }
@@ -58,10 +69,11 @@ function repo.save(window)
             "DELETE FROM " .. TABLE .. " WHERE name = $1", { window.name })
         if err then return nil, err end
         local group = type(window.group) == "string" and window.group or ""
+        local spec = json.encode(type(window.spec) == "table" and window.spec or {})
         local _, ierr = db:execute(
             "INSERT INTO " .. TABLE ..
-            " (name, title, width, height, source, modules, menu_group) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            { window.name, window.title, window.width, window.height, window.source, modules, group })
+            " (name, title, width, height, source, modules, menu_group, spec) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            { window.name, window.title, window.width, window.height, window.source, modules, group, spec })
         if ierr then return nil, ierr end
         return window.name
     end)

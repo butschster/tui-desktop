@@ -40,6 +40,7 @@ local function handler()
             height = window.height,
             modules = window.modules,
             group = window.group,
+            spec = window.spec,
             updated_at = window.updated_at,
             live = registry.get(id) ~= nil,
         }

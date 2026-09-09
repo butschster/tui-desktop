@@ -27,3 +27,16 @@ entries:
     imports:
       migration: wippy.migration:migration
     method: migrate
+
+  # butschster.tui_desktop.migrations:03_window_spec
+  - name: 03_window_spec
+    kind: function.lua
+    meta:
+      type: migration
+      comment: Описание окна из мастерской сверх кода — импорты, значок, тип окна, пиксельный вид; колонка spec, JSON, '{}' означает «ничего не объявлено».
+      target_db: app:db
+      timestamp: "2026-09-09T09:00:00Z"
+    source: file://03_window_spec.lua
+    imports:
+      migration: wippy.migration:migration
+    method: migrate
