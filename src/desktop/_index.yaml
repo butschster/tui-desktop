@@ -133,7 +133,7 @@ entries:
     meta:
       type: tui_desktop.window
       title: Bash
-      group: Программы
+      group: Programs
       image: program
       width: 80
       height: 24
